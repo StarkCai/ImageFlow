@@ -73,12 +73,7 @@ class ObjectDetectionNode(Node):
 
         # 输出框配置
         self.box_type: str = "矩形"        # 矩形 / 圆形
-        self.box_color: Tuple[int, int, int] = (0, 255, 0)  # BGR
         self.box_thickness: int = 2
-
-        # YOLO 输出格式
-        self.output_layout: str = "xyxy"       # xyxy / cxcywh
-        self.coord_mode: str = "normalized"     # normalized (0~1) / pixel (输入分辨率坐标)
 
         # 结果缓存（供日志面板读取）
         self._result_summary: str = ""
@@ -180,51 +175,156 @@ class ObjectDetectionNode(Node):
 
     def _parse_output(self, results: list, orig_w: int, orig_h: int,
                       ratio: float, pad_x: float, pad_y: float) -> list:
-        """解析模型输出为检测列表。"""
+        """解析模型输出为检测列表，自动识别坐标格式并统一映射到原始图像坐标系。
 
-        def _to_original(x: float, y: float) -> Tuple[float, float]:
-            """将模型输出坐标还原到原始图像坐标系。"""
-            if self.coord_mode == "normalized":
+        支持三种常见 YOLO ONNX 输出格式：
+          - 后处理格式  [1, N, 6]    → 直接使用
+          - 通道优先    [1, C, P]    → 转置为 [P, C]
+          - 检测优先    [1, N, C]    → 直接使用
+        """
+
+        def _is_normalized(x1, y1, x2, y2) -> bool:
+            return all(0.0 <= v <= 1.0 for v in (x1, y1, x2, y2))
+
+        def _is_cxcywh(x1, y1, x2, y2) -> bool:
+            return x2 < x1 or y2 < y1 or (x2 + y2) < (x1 + y1) * 0.3
+
+        def _to_original(x: float, y: float, normalized: bool) -> Tuple[float, float]:
+            if normalized:
                 x = x * self.input_width
                 y = y * self.input_height
             ox = (x - pad_x) / ratio
             oy = (y - pad_y) / ratio
-            return (max(0.0, min(ox, orig_w)),
-                    max(0.0, min(oy, orig_h)))
+            return (max(0.0, min(ox, orig_w - 1)),
+                    max(0.0, min(oy, orig_h - 1)))
 
-        def _box_to_original(x1: float, y1: float, x2: float, y2: float) -> list:
-            ox1, oy1 = _to_original(x1, y1)
-            ox2, oy2 = _to_original(x2, y2)
+        def _box_to_original(x1, y1, x2, y2, normalized: bool) -> list:
+            ox1, oy1 = _to_original(x1, y1, normalized)
+            ox2, oy2 = _to_original(x2, y2, normalized)
+            if ox1 > ox2:
+                ox1, ox2 = ox2, ox1
+            if oy1 > oy2:
+                oy1, oy2 = oy2, oy1
             return [ox1, oy1, ox2, oy2]
 
-        # 尝试 YOLO 风格单输出 [1, N, 6]
+        # ── YOLO 单输出 ──
         if len(results) == 1 and results[0].ndim == 3:
-            preds = results[0][0]  # [N, 6]
-            if preds.shape[1] < 6:
+            preds = results[0][0]  # [C, P] 或 [N, 6] 或 [N, 85]
+
+            # 检测通道优先格式 [C, P]：第一维是通道(≤100)、第二维是空间位置(>100)
+            if preds.shape[1] > 100 and preds.shape[0] <= 100:
+                preds = preds.T  # → [P, C]
+
+            num_values = preds.shape[1]
+            if num_values < 4:
                 return []
+
             detections = []
-            for det in preds:
-                if self.output_layout == "cxcywh":
-                    cx, cy, bw, bh, conf, cls_id = det[:6]
+
+            if num_values == 6:
+                # 后处理格式: [x1, y1, x2, y2, conf, cls_id]
+                for det in preds:
+                    x1, y1, x2, y2, conf, cls_id = det[:6]
+                    if conf < self.conf_threshold:
+                        continue
+                    cls_id = int(cls_id)
+                    if cls_id < 0 or cls_id >= self.num_classes:
+                        continue
+
+                    normalized = _is_normalized(x1, y1, x2, y2)
+                    if _is_cxcywh(x1, y1, x2, y2):
+                        cx, cy, bw, bh = x1, y1, x2, y2
+                        x1 = cx - bw / 2
+                        y1 = cy - bh / 2
+                        x2 = cx + bw / 2
+                        y2 = cy + bh / 2
+
+                    box = _box_to_original(x1, y1, x2, y2, normalized)
+                    detections.append({
+                        "box": box,
+                        "score": float(conf),
+                        "class_id": cls_id,
+                    })
+
+            elif num_values == self.num_classes + 5:
+                # YOLOv5 原始输出: [cx, cy, w, h, obj, class_0..class_N]
+                for det in preds:
+                    cx, cy, bw, bh = det[0:4]
+                    obj = float(det[4])
+                    class_scores = det[5:]
+                    cls_id = int(np.argmax(class_scores))
+                    conf = obj * float(class_scores[cls_id])
+                    if conf < self.conf_threshold:
+                        continue
+                    if cls_id < 0 or cls_id >= self.num_classes:
+                        continue
+
+                    normalized = _is_normalized(cx, cy, bw, bh)
                     x1 = cx - bw / 2
                     y1 = cy - bh / 2
                     x2 = cx + bw / 2
                     y2 = cy + bh / 2
-                else:
-                    x1, y1, x2, y2, conf, cls_id = det[:6]
 
-                if conf < self.conf_threshold:
-                    continue
-                cls_id = int(cls_id)
-                if cls_id < 0 or cls_id >= self.num_classes:
-                    continue
+                    box = _box_to_original(x1, y1, x2, y2, normalized)
+                    detections.append({
+                        "box": box,
+                        "score": conf,
+                        "class_id": cls_id,
+                    })
 
-                box = _box_to_original(x1, y1, x2, y2)
-                detections.append({
-                    "box": box,
-                    "score": float(conf),
-                    "class_id": cls_id,
-                })
+            elif num_values == self.num_classes + 4:
+                # YOLOv8 原始输出: [cx, cy, w, h, class_0..class_N]
+                for det in preds:
+                    cx, cy, bw, bh = det[0:4]
+                    class_scores = det[4:]
+                    cls_id = int(np.argmax(class_scores))
+                    conf = float(class_scores[cls_id])
+                    if conf < self.conf_threshold:
+                        continue
+                    if cls_id < 0 or cls_id >= self.num_classes:
+                        continue
+
+                    normalized = _is_normalized(cx, cy, bw, bh)
+                    x1 = cx - bw / 2
+                    y1 = cy - bh / 2
+                    x2 = cx + bw / 2
+                    y2 = cy + bh / 2
+
+                    box = _box_to_original(x1, y1, x2, y2, normalized)
+                    detections.append({
+                        "box": box,
+                        "score": conf,
+                        "class_id": cls_id,
+                    })
+
+            else:
+                # 尝试用 num_classes 推断（兼容 class 数量未对齐但有 objectness 的情况）
+                # 当 num_values >= 6 且 ≠ 上述精确匹配时：
+                # 假设 [cx,cy,w,h, ...class_scores...] 无 objectness
+                for det in preds:
+                    cx, cy, bw, bh = det[0:4]
+                    class_scores = det[4:]
+                    if len(class_scores) == 0:
+                        continue
+                    cls_id = int(np.argmax(class_scores))
+                    conf = float(class_scores[cls_id])
+                    if conf < self.conf_threshold:
+                        continue
+                    if cls_id < 0 or cls_id >= self.num_classes:
+                        continue
+
+                    normalized = _is_normalized(cx, cy, bw, bh)
+                    x1 = cx - bw / 2
+                    y1 = cy - bh / 2
+                    x2 = cx + bw / 2
+                    y2 = cy + bh / 2
+
+                    box = _box_to_original(x1, y1, x2, y2, normalized)
+                    detections.append({
+                        "box": box,
+                        "score": conf,
+                        "class_id": cls_id,
+                    })
 
             if detections:
                 boxes = np.array([d["box"] for d in detections])
@@ -233,7 +333,7 @@ class ObjectDetectionNode(Node):
                 return [detections[i] for i in keep]
             return []
 
-        # 尝试多输出格式: boxes [1,N,4] + scores [1,N,C]
+        # ── 多输出格式: boxes [1,N,4] + scores [1,N,C] ──
         array_outputs = [o for o in results if isinstance(o, np.ndarray) and o.ndim >= 2]
         if len(array_outputs) >= 2:
             boxes_out = array_outputs[0]
@@ -262,8 +362,17 @@ class ObjectDetectionNode(Node):
                 if conf < self.conf_threshold:
                     continue
 
-                x1, y1, x2, y2 = boxes_out[i][:4]
-                box = _box_to_original(x1, y1, x2, y2)
+                x1, y1, x2, y2 = boxes_out[i][:4].tolist()
+                normalized = _is_normalized(x1, y1, x2, y2)
+
+                if _is_cxcywh(x1, y1, x2, y2):
+                    cx, cy, bw, bh = x1, y1, x2, y2
+                    x1 = cx - bw / 2
+                    y1 = cy - bh / 2
+                    x2 = cx + bw / 2
+                    y2 = cy + bh / 2
+
+                box = _box_to_original(x1, y1, x2, y2, normalized)
                 detections.append({
                     "box": box,
                     "score": conf,
@@ -278,18 +387,34 @@ class ObjectDetectionNode(Node):
 
         return []
 
+    @staticmethod
+    def _class_color(class_id: int) -> Tuple[int, int, int]:
+        """为每个类别 ID 生成区分度高的 BGR 颜色（黄金比例色相分布）。"""
+        hue = (class_id * 0.618033988749895) % 1.0
+        h = hue * 6.0
+        c = 0.9 * 0.75  # value * saturation
+        x = c * (1 - abs(h % 2 - 1))
+        m = 0.9 - c
+        if h < 1:   r, g, b = c, x, 0
+        elif h < 2: r, g, b = x, c, 0
+        elif h < 3: r, g, b = 0, c, x
+        elif h < 4: r, g, b = 0, x, c
+        elif h < 5: r, g, b = x, 0, c
+        else:       r, g, b = c, 0, x
+        return (int((b + m) * 255), int((g + m) * 255), int((r + m) * 255))
+
     def _draw_detections(self, img_bgr: np.ndarray, detections: list,
                          class_mapping: dict = None) -> np.ndarray:
-        """在图像上绘制检测框。"""
+        """在图像上绘制检测框，不同类别使用不同颜色。"""
         if class_mapping is None:
             class_mapping = {}
         result = img_bgr.copy()
-        color = self.box_color
         for det in detections:
             x1, y1, x2, y2 = [int(v) for v in det["box"]]
             score = det["score"]
             cls_id = det["class_id"]
             cls_name = self._resolve_class_name(cls_id, class_mapping)
+            color = self._class_color(cls_id)
 
             if self.box_type == "圆形":
                 cx = (x1 + x2) // 2

@@ -33,8 +33,9 @@ os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
 
 from node_base import Node, Port, Connection, ExecutionEngine
 from node_registry import NodeRegistry
-from node_canvas import NodeScene, NodeCanvas, NodeItem
+from node_canvas import NodeScene, NodeCanvas, NodeItem, WireItem
 from nodes.image_output import _ndarray_to_qpixmap
+from project import save_project, load_project, apply_params
 
 # 触发节点注册
 import nodes  # noqa: F401
@@ -802,13 +803,6 @@ class PropertyPanel(QWidget):
         # 输出框类型
         self._add_combo("输出框类型:", "box_type", node, ["矩形", "圆形"])
 
-        # 输出格式
-        self._add_combo("YOLO输出格式:", "output_layout", node, ["xyxy", "cxcywh"])
-
-        # 坐标模式
-        self._add_combo("坐标模式:", "coord_mode", node,
-                        ["normalized", "pixel"])
-
         # 推理设备
         self._add_combo("推理设备:", "device", node, ["GPU", "CPU"])
 
@@ -854,8 +848,9 @@ class PropertyPanel(QWidget):
         self._form_layout.addRow("输入高度 (H):", h_spin)
 
         conf_spin = QDoubleSpinBox()
-        conf_spin.setRange(0.05, 1.0)
+        conf_spin.setRange(0.0, 1.0)
         conf_spin.setSingleStep(0.05)
+        conf_spin.setDecimals(2)
         conf_spin.setValue(node.conf_threshold)
         conf_spin.setStyleSheet(self._input_style())
         conf_spin.valueChanged.connect(lambda v: setattr(node, "conf_threshold", v))
@@ -1238,6 +1233,7 @@ class MainWindow(QMainWindow):
 
         self.engine = ExecutionEngine()
         self._runner: Optional[FlowRunner] = None
+        self._current_project_path: str = ""
         self._build_ui()
         self._apply_theme()
 
@@ -1316,6 +1312,10 @@ class MainWindow(QMainWindow):
         )
 
         file_menu = menu_bar.addMenu("文件(&F)")
+        file_menu.addAction("新建工程(&N)", self._new_project, Qt.Key_N | Qt.CTRL)
+        file_menu.addAction("读取工程(&O)", self._open_project, Qt.Key_O | Qt.CTRL)
+        file_menu.addAction("保存工程(&S)", self._save_project, Qt.Key_S | Qt.CTRL)
+        file_menu.addSeparator()
         file_menu.addAction("清空画布", self._clear_canvas)
         file_menu.addSeparator()
         file_menu.addAction("退出(&Q)", self.close, Qt.Key_Q | Qt.CTRL)
@@ -1342,6 +1342,18 @@ class MainWindow(QMainWindow):
         run_action.setToolTip("执行当前节点流程 (F5)")
         run_action.triggered.connect(self._execute_flow)
         toolbar.addAction(run_action)
+
+        toolbar.addSeparator()
+
+        save_action = QAction("💾 保存", self)
+        save_action.setToolTip("保存工程到文件 (Ctrl+S)")
+        save_action.triggered.connect(self._save_project)
+        toolbar.addAction(save_action)
+
+        open_action = QAction("📂 读取", self)
+        open_action.setToolTip("读取工程文件 (Ctrl+O)")
+        open_action.triggered.connect(self._open_project)
+        toolbar.addAction(open_action)
 
         toolbar.addSeparator()
 
@@ -1417,12 +1429,137 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
         if reply == QMessageBox.Yes:
-            for uid in list(self.scene.node_items.keys()):
-                item = self.scene.node_items[uid]
-                self.scene.remove_node_item(item)
-            self.property_panel.set_node(None)
+            self._do_clear_canvas()
             self.status_bar.showMessage("画布已清空")
             self.log_panel.warn("画布已清空")
+
+    def _do_clear_canvas(self):
+        """清空画布和引擎（不弹出确认框）。"""
+        for uid in list(self.scene.node_items.keys()):
+            item = self.scene.node_items[uid]
+            self.scene.remove_node_item(item)
+        self.scene.node_items.clear()
+        self.scene.wire_items.clear()
+        self.engine.nodes.clear()
+        self.engine.connections.clear()
+        self.property_panel.set_node(None)
+
+    # ── 工程管理 ──────────────────────────────────────
+
+    def _new_project(self):
+        if self.engine.nodes:
+            reply = QMessageBox.question(
+                self, "新建工程", "当前工程尚未保存，确定要新建工程吗？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+        self._do_clear_canvas()
+        self._current_project_path = ""
+        self.setWindowTitle("图像处理流式编辑器 — Image Flow [未命名]")
+        self.status_bar.showMessage("已创建新工程")
+        self.log_panel.info("新建工程")
+
+    def _save_project(self):
+        if not self._current_project_path:
+            path, _ = QFileDialog.getSaveFileName(
+                self, "保存工程", "flow.json",
+                "Image Flow 工程 (*.json);;所有文件 (*)"
+            )
+            if not path:
+                return
+            self._current_project_path = path
+
+        try:
+            save_project(self.engine, self.scene, self._current_project_path)
+            fname = os.path.basename(self._current_project_path)
+            self.setWindowTitle(f"图像处理流式编辑器 — Image Flow [{fname}]")
+            self.status_bar.showMessage(f"工程已保存: {self._current_project_path}")
+            self.log_panel.success(f"工程已保存: {self._current_project_path}")
+        except Exception as e:
+            QMessageBox.warning(self, "保存失败", str(e))
+            self.log_panel.error(f"保存工程失败: {e}")
+
+    def _open_project(self):
+        if self.engine.nodes:
+            reply = QMessageBox.question(
+                self, "读取工程", "当前工程尚未保存，确定要读取新工程吗？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "读取工程", "",
+            "Image Flow 工程 (*.json);;所有文件 (*)"
+        )
+        if not path:
+            return
+
+        try:
+            data = load_project(path)
+            self._do_clear_canvas()
+            self._rebuild_scene(data)
+            self._current_project_path = path
+            fname = os.path.basename(path)
+            self.setWindowTitle(f"图像处理流式编辑器 — Image Flow [{fname}]")
+            self.status_bar.showMessage(f"工程已加载: {path} — {len(data.get('nodes', []))} 个节点")
+            self.log_panel.success(f"工程已加载: {path}")
+            self._fit_canvas()
+        except Exception as e:
+            QMessageBox.warning(self, "读取失败", f"无法读取工程文件:\n{e}")
+            self.log_panel.error(f"读取工程失败: {e}")
+
+    def _rebuild_scene(self, data: dict):
+        """根据工程数据重建场景中的节点和连线。"""
+        registry = NodeRegistry()
+        cls_map: dict[str, type] = {}
+        for cls in registry.list_all().values():
+            cls_map[cls.__name__] = cls
+
+        node_map: dict[str, Node] = {}
+
+        for nd in data.get("nodes", []):
+            cls_name = nd["type"]
+            cls = cls_map.get(cls_name)
+            if cls is None:
+                self.log_panel.warn(f"跳过未知节点类型: {cls_name}")
+                continue
+
+            node = cls()
+            node.uid = nd["uid"]
+            apply_params(node, nd.get("params", {}))
+
+            pos = QPointF(nd.get("x", 0), nd.get("y", 0))
+            item = NodeItem(node)
+            item.setPos(pos)
+            self.scene.addItem(item)
+            self.scene.node_items[node.uid] = item
+            item.node_moved.connect(self.scene._on_node_moved)
+            for port_item in item.port_items.values():
+                port_item.port_clicked.connect(self.scene._on_port_clicked)
+
+            self.engine.add_node(node)
+            node_map[node.uid] = node
+
+        for cd in data.get("connections", []):
+            src_node = node_map.get(cd["src_node"])
+            tgt_node = node_map.get(cd["tgt_node"])
+            if not src_node or not tgt_node:
+                continue
+            src_port = src_node.outputs.get(cd["src_port"])
+            tgt_port = tgt_node.inputs.get(cd["tgt_port"])
+            if not src_port or not tgt_port:
+                continue
+
+            conn = Connection(src_port, tgt_port)
+            conn.uid = cd["uid"]
+            self.engine.add_connection(conn)
+
+            wire = WireItem(conn)
+            self.scene.addItem(wire)
+            wire.update_path()
+            self.scene.wire_items[conn.uid] = wire
 
     def _fit_canvas(self):
         if self.scene.node_items:

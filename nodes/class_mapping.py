@@ -2,6 +2,7 @@
 
 import json
 import os
+from typing import Optional
 
 from node_base import Node
 from node_registry import register_node
@@ -18,7 +19,7 @@ CLASS_MAPPING_REFERENCE = """
 """.strip()
 
 
-def _validate_mapping(data) -> dict | None:
+def _validate_mapping(data) -> Optional[dict]:
     """验证并返回标准化的类别映射，格式不符返回 None。"""
     if not isinstance(data, dict):
         return None
