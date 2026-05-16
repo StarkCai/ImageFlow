@@ -9,4 +9,6 @@ from nodes.morphology import MorphologyNode
 from nodes.enhancement import EnhancementNode
 from nodes.frequency import FrequencyNode
 from nodes.segmentation import SegmentationNode
+from nodes.feature_detection import FeatureDetectionNode
+from nodes.color_space import ColorSpaceNode
 from nodes.image_output import ImageOutputNode

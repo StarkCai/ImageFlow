@@ -392,6 +392,10 @@ class PropertyPanel(QWidget):
             self._add_frequency_params(node)
         elif cls_name == "SegmentationNode":
             self._add_segmentation_params(node)
+        elif cls_name == "FeatureDetectionNode":
+            self._add_feature_detection_params(node)
+        elif cls_name == "ColorSpaceNode":
+            pass  # 颜色空间转换无需额外参数，算法即转换类型
         elif cls_name == "ImageOutputNode":
             self._add_output_params(node)
 
@@ -607,6 +611,45 @@ class PropertyPanel(QWidget):
             self._add_spin("迭代次数:", "grabcut_iters", node, (1, 20))
         elif algo == "阈值分割":
             self._add_spin("阈值:", "seg_threshold", node, (0, 255))
+
+    # ── FeatureDetection ─────────────────────────────────
+
+    def _add_feature_detection_params(self, node):
+        algo = node.algorithm
+
+        if algo == "Harris角点检测":
+            self._add_spin("邻域大小 (blockSize):", "harris_block_size",
+                          node, (2, 10))
+            self._add_spin("Sobel孔径 (ksize):", "harris_ksize",
+                          node, (3, 31), step=2)
+            self._add_double_spin("Harris参数 (k):", "harris_k",
+                                  node, (0.01, 0.2), step=0.01)
+            self._add_double_spin("响应阈值:", "harris_threshold",
+                                  node, (0.001, 0.5), step=0.001)
+        elif algo == "FAST角点检测":
+            self._add_spin("强度阈值:", "fast_threshold", node, (1, 200))
+            self._add_check("非极大值抑制", "fast_nonmax", node)
+        elif algo == "SIFT特征":
+            self._add_spin("最大特征数:", "sift_nfeatures", node, (0, 10000))
+            self._add_spin("层数 (nOctaveLayers):", "sift_n_octave_layers",
+                          node, (1, 10))
+            self._add_double_spin("对比度阈值:", "sift_contrast_threshold",
+                                  node, (0.01, 0.2), step=0.01)
+            self._add_double_spin("边缘阈值:", "sift_edge_threshold",
+                                  node, (1.0, 50.0), step=1.0)
+            self._add_double_spin("Sigma:", "sift_sigma",
+                                  node, (0.5, 5.0), step=0.1)
+        elif algo == "SURF特征":
+            self._add_spin("Hessian阈值:", "surf_hessian", node, (100, 10000))
+            self._add_spin("八度数 (nOctaves):", "surf_n_octaves", node, (1, 8))
+            self._add_spin("层数 (nOctaveLayers):", "surf_n_octave_layers",
+                          node, (1, 6))
+            self._add_check("扩展描述符 (128维)", "surf_extended", node)
+            self._add_check("忽略方向 (Upright)", "surf_upright", node)
+        elif algo == "HOG特征":
+            self._add_spin("细胞大小:", "hog_cell_size", node, (4, 32), step=4)
+            self._add_spin("块大小 (cells):", "hog_block_size", node, (2, 4))
+            self._add_spin("方向数 (nbins):", "hog_nbins", node, (4, 18))
 
     # ── ImageOutput ────────────────────────────────────
 
