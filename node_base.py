@@ -18,7 +18,13 @@ class Port:
     name: str
     port_type: PortType
     node: "Node"
+    data_type: str = ""
+    multi_connect: bool = False
     uid: str = field(default_factory=lambda: uuid4().hex[:8])
+
+    def __post_init__(self):
+        if not self.data_type:
+            self.data_type = self.name
 
     def __hash__(self):
         return hash(self.uid)
@@ -58,13 +64,15 @@ class Node:
     def _setup_ports(self):
         """子类重写以定义输入/输出端口。"""
 
-    def add_input(self, name: str) -> Port:
-        port = Port(name, PortType.INPUT, self)
+    def add_input(self, name: str, data_type: str = "",
+                  multi_connect: bool = False) -> Port:
+        port = Port(name, PortType.INPUT, self,
+                    data_type=data_type, multi_connect=multi_connect)
         self.inputs[name] = port
         return port
 
-    def add_output(self, name: str) -> Port:
-        port = Port(name, PortType.OUTPUT, self)
+    def add_output(self, name: str, data_type: str = "") -> Port:
+        port = Port(name, PortType.OUTPUT, self, data_type=data_type)
         self.outputs[name] = port
         return port
 
@@ -154,14 +162,24 @@ class ExecutionEngine:
 
             for name, in_port in node.inputs.items():
                 # 查找连到此输入端口的连接
-                source_data = None
-                for conn in self.connections:
-                    if conn.input_port is in_port:
-                        src_node = conn.output_port.node
-                        src_port_name = conn.output_port.name
-                        source_data = src_node.get_data(src_port_name)
-                        break
-                input_data[name] = source_data
+                if in_port.multi_connect:
+                    # 多连线端口：收集所有连接的数据到列表
+                    source_list = []
+                    for conn in self.connections:
+                        if conn.input_port is in_port:
+                            src_node = conn.output_port.node
+                            src_port_name = conn.output_port.name
+                            source_list.append(src_node.get_data(src_port_name))
+                    input_data[name] = source_list
+                else:
+                    source_data = None
+                    for conn in self.connections:
+                        if conn.input_port is in_port:
+                            src_node = conn.output_port.node
+                            src_port_name = conn.output_port.name
+                            source_data = src_node.get_data(src_port_name)
+                            break
+                    input_data[name] = source_data
 
             try:
                 outputs = node.process(**input_data)

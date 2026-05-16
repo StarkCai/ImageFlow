@@ -456,15 +456,20 @@ class NodeScene(QGraphicsScene):
         out_port = p1 if p1.port_type == PortType.OUTPUT else p2
         in_port = p2 if p2.port_type == PortType.INPUT else p1
 
+        # 检查数据类型是否兼容
+        if out_port.data_type != in_port.data_type:
+            return
+
         # 检查是否已存在连接
         existing = self.engine.find_connection(out_port, in_port)
         if existing:
             return
 
-        # 输入端口只能接收一个连接
-        for c in self.engine.connections:
-            if c.input_port is in_port:
-                return
+        # 非多连线输入端口只能接收一个连接
+        if not in_port.multi_connect:
+            for c in self.engine.connections:
+                if c.input_port is in_port:
+                    return
 
         conn = Connection(out_port, in_port)
         self.engine.add_connection(conn)

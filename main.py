@@ -144,6 +144,57 @@ class NodeListItem(QWidget):
         drag.exec_(Qt.CopyAction)
 
 
+class CollapsibleSection(QWidget):
+    """可折叠分组控件，点击标题栏展开/折叠内容区域。"""
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self._expanded = False
+        self._title = title
+        self._build_ui()
+
+    def _build_ui(self):
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(2)
+
+        # 标题栏
+        self._header = QPushButton()
+        self._header.setCursor(Qt.PointingHandCursor)
+        self._header.setFixedHeight(32)
+        self._header.setStyleSheet(
+            f"QPushButton {{ background: {BTN_HOVER}; border: none; border-radius: 4px; "
+            f"text-align: left; padding: 6px 10px; color: {SIDEBAR_TEXT}; "
+            f"font-size: 12px; font-weight: bold; }}"
+            f"QPushButton:hover {{ background: #555560; }}"
+        )
+        self._header.clicked.connect(self._toggle)
+        self._layout.addWidget(self._header)
+
+        # 内容容器
+        self._content = QWidget()
+        self._content.setStyleSheet("background: transparent;")
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setContentsMargins(12, 2, 0, 6)
+        self._content_layout.setSpacing(2)
+        self._content.setVisible(False)
+        self._layout.addWidget(self._content)
+
+        self._update_header_text()
+
+    def _toggle(self):
+        self._expanded = not self._expanded
+        self._content.setVisible(self._expanded)
+        self._update_header_text()
+
+    def _update_header_text(self):
+        arrow = "▼" if self._expanded else "▶"
+        self._header.setText(f"  {arrow}  {self._title}")
+
+    def add_widget(self, widget: QWidget):
+        self._content_layout.addWidget(widget)
+
+
 class NodePanel(QWidget):
     """左侧节点列表面板。"""
 
@@ -184,22 +235,18 @@ class NodePanel(QWidget):
         container.setStyleSheet("background: transparent;")
         container_layout = QVBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
-        container_layout.setSpacing(12)
+        container_layout.setSpacing(6)
 
         self._list_items: dict[str, NodeListItem] = {}
 
         for cat_name, node_classes in grouped.items():
-            cat_label = QLabel(cat_name)
-            cat_label.setStyleSheet(
-                f"color: {SIDEBAR_DIM}; font-size: 10px; font-weight: bold; "
-                f"text-transform: uppercase; padding: 2px 4px; background: transparent;"
-            )
-            container_layout.addWidget(cat_label)
+            section = CollapsibleSection(cat_name)
+            container_layout.addWidget(section)
 
             for cls in node_classes:
                 item = NodeListItem(cls)
                 item.mouseDoubleClickEvent = lambda e, c=cls: self._on_double_click(c)
-                container_layout.addWidget(item)
+                section.add_widget(item)
                 self._list_items[cls.display_name] = item
 
         container_layout.addStretch()
@@ -396,6 +443,12 @@ class PropertyPanel(QWidget):
             self._add_feature_detection_params(node)
         elif cls_name == "ColorSpaceNode":
             pass  # 颜色空间转换无需额外参数，算法即转换类型
+        elif cls_name == "RegionInputNode":
+            self._add_region_input_params(node)
+        elif cls_name == "OverlayNode":
+            self._add_overlay_params(node)
+        elif cls_name == "CropNode":
+            pass  # 算法选择由 PropertyPanel 自动处理，无额外参数
         elif cls_name == "ImageOutputNode":
             self._add_output_params(node)
 
@@ -454,6 +507,64 @@ class PropertyPanel(QWidget):
         path_layout.addWidget(browse_btn)
 
         self._form_layout.addRow("文件路径:", path_layout)
+
+    # ── RegionInput ───────────────────────────────────
+
+    def _add_region_input_params(self, node):
+        path_layout = QHBoxLayout()
+        path_edit = QLineEdit()
+        path_edit.setText(node.file_path)
+        path_edit.setPlaceholderText("选择图像或视频文件...")
+        path_edit.setStyleSheet(self._input_style())
+        path_edit.textChanged.connect(lambda v: setattr(node, "file_path", v))
+        path_layout.addWidget(path_edit)
+
+        browse_btn = QPushButton("...")
+        browse_btn.setFixedWidth(32)
+        browse_btn.setStyleSheet(self._btn_style())
+        browse_btn.clicked.connect(lambda: self._browse_region_file(node, path_edit))
+        path_layout.addWidget(browse_btn)
+
+        self._form_layout.addRow("文件路径:", path_layout)
+
+        draw_btn = QPushButton("✎ 绘制区域")
+        draw_btn.setStyleSheet(
+            f"QPushButton {{ background: #5cb878; color: #fff; border: none; "
+            f"border-radius: 4px; padding: 8px 16px; font-size: 12px; font-weight: bold; }}"
+            f"QPushButton:hover {{ background: #6dd888; }}"
+        )
+        draw_btn.clicked.connect(lambda: self._open_region_drawer(node))
+        self._form_layout.addRow("", draw_btn)
+
+        self._region_count_label = QLabel()
+        self._update_region_count_label(node)
+        self._form_layout.addRow("", self._region_count_label)
+
+        # 保存 label 引用用于刷新（在 set_node 中更新）
+        self._region_count_label_ref = self._region_count_label
+
+    def _open_region_drawer(self, node):
+        node.open_draw_dialog()
+        self._update_region_count_label(node)
+
+    def _update_region_count_label(self, node):
+        count = getattr(node, "region_count", 0)
+        text = f"已绘制 {count} 个区域" if count > 0 else "尚未绘制区域"
+        color = "#5cb878" if count > 0 else "#9a9aa0"
+        self._region_count_label.setText(text)
+        self._region_count_label.setStyleSheet(
+            f"color: {color}; font-size: 11px; padding: 4px 0; background: transparent;"
+        )
+
+    # ── Overlay ───────────────────────────────────────
+
+    def _add_overlay_params(self, node):
+        algo = node.algorithm
+        if algo == "轮廓绘制":
+            self._add_spin("线宽:", "thickness", node, (1, 20))
+        elif algo == "半透明填充":
+            self._add_double_spin("透明度 (alpha):", "alpha",
+                                  node, (0.1, 0.9), step=0.05)
 
     # ── Smoothing ──────────────────────────────────────
 
@@ -691,6 +802,19 @@ class PropertyPanel(QWidget):
         path, _ = QFileDialog.getOpenFileName(
             self, "选择图像文件", "",
             "图像文件 (*.png *.jpg *.jpeg *.bmp *.tiff *.webp);;所有文件 (*)"
+        )
+        if path:
+            path_edit.setText(path)
+            node.file_path = path
+
+    def _browse_region_file(self, node, path_edit: QLineEdit):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择图像或视频文件", "",
+            "媒体文件 (*.png *.jpg *.jpeg *.bmp *.tiff *.webp "
+            "*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.webm);;"
+            "图像文件 (*.png *.jpg *.jpeg *.bmp *.tiff *.webp);;"
+            "视频文件 (*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.webm);;"
+            "所有文件 (*)"
         )
         if path:
             path_edit.setText(path)
