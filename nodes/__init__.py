@@ -14,4 +14,6 @@ from nodes.color_space import ColorSpaceNode
 from nodes.region_input import RegionInputNode
 from nodes.overlay import OverlayNode
 from nodes.crop import CropNode
+from nodes.object_detection import ObjectDetectionNode
+from nodes.classification import ClassificationNode
 from nodes.image_output import ImageOutputNode

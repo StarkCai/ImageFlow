@@ -14,9 +14,10 @@ import os
 import traceback
 from typing import Type, Optional
 
-from PyQt5.QtCore import Qt, QMimeData, QPointF, QSize, QTimer, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QMimeData, QPointF, QSize, QTimer, QThread, pyqtSignal, QDateTime
 from PyQt5.QtGui import (
     QFont, QColor, QPalette, QDrag, QPixmap, QPainter, QPen, QBrush, QIcon,
+    QTextCursor,
 )
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -56,10 +57,22 @@ class FlowRunner(QThread):
 
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
+    node_started = pyqtSignal(str)
+    node_done = pyqtSignal(str)
+    node_error = pyqtSignal(str, str)     # node_name, error_msg
 
     def __init__(self, engine: ExecutionEngine):
         super().__init__()
         self.engine = engine
+        self.engine._progress_callback = self._on_node_progress
+
+    def _on_node_progress(self, node_name: str, phase: str):
+        if phase == "start":
+            self.node_started.emit(node_name)
+        elif phase == "done":
+            self.node_done.emit(node_name)
+        elif phase.startswith("error:"):
+            self.node_error.emit(node_name, phase[7:])
 
     def run(self):
         try:
@@ -83,7 +96,7 @@ class NodeListItem(QWidget):
         layout.setSpacing(8)
 
         # 类别色标
-        color_map = {"输入": ACCENT, "图像处理": SUCCESS, "输出": "#f0a050"}
+        color_map = {"输入": ACCENT, "图像处理": SUCCESS, "输出": "#f0a050", "图像叠加": "#c084fc", "深度学习": "#f472b6"}
         dot = QLabel("●")
         dot.setStyleSheet(
             f"color: {color_map.get(node_cls.category, ACCENT)}; "
@@ -258,6 +271,99 @@ class NodePanel(QWidget):
         main_win = self.window()
         if isinstance(main_win, MainWindow):
             main_win.add_node_to_center(node_cls)
+
+
+# ── 日志面板 ──────────────────────────────────────────
+LOG_BG = "#15151a"
+LOG_TEXT = "#b8b8c0"
+LOG_INFO = "#7eb8da"
+LOG_WARN = "#e0a050"
+LOG_ERROR = "#e05560"
+LOG_SUCCESS = "#5cb878"
+LOG_TIMESTAMP = "#5a5a6a"
+
+
+class LogPanel(QWidget):
+    """底部日志面板，线程安全地显示算子运行日志和错误信息。"""
+
+    _append_signal = pyqtSignal(str, str)  # level, message
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._build_ui()
+        self._append_signal.connect(self._do_append)
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(2)
+
+        # 标题栏
+        header = QHBoxLayout()
+        title = QLabel("执行日志")
+        title.setFont(QFont("Microsoft YaHei", 9, QFont.Bold))
+        title.setStyleSheet(f"color: {SIDEBAR_DIM}; background: transparent;")
+        header.addWidget(title)
+        header.addStretch()
+
+        clear_btn = QPushButton("清空")
+        clear_btn.setFixedSize(50, 20)
+        clear_btn.setStyleSheet(
+            f"QPushButton {{ background: #3d3d45; color: {SIDEBAR_DIM}; "
+            f"border: none; border-radius: 3px; font-size: 10px; }}"
+            f"QPushButton:hover {{ background: #555; color: {SIDEBAR_TEXT}; }}"
+        )
+        clear_btn.clicked.connect(self.clear)
+        header.addWidget(clear_btn)
+        layout.addLayout(header)
+
+        # 日志文本区
+        self._text = QTextEdit()
+        self._text.setReadOnly(True)
+        self._text.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self._text.setStyleSheet(
+            f"QTextEdit {{ background: {LOG_BG}; color: {LOG_TEXT}; "
+            f"border: 1px solid #333; border-radius: 4px; "
+            f"font-size: 11px; font-family: 'Consolas', 'Microsoft YaHei'; "
+            f"padding: 4px 6px; }}"
+            f"QScrollBar:vertical {{ width: 6px; background: transparent; }}"
+            f"QScrollBar::handle:vertical {{ background: #444; border-radius: 3px; }}"
+        )
+        layout.addWidget(self._text)
+
+    def info(self, msg: str):
+        self._append_signal.emit("INFO", msg)
+
+    def success(self, msg: str):
+        self._append_signal.emit("OK", msg)
+
+    def warn(self, msg: str):
+        self._append_signal.emit("WARN", msg)
+
+    def error(self, msg: str):
+        self._append_signal.emit("ERROR", msg)
+
+    def clear(self):
+        self._text.clear()
+
+    def _do_append(self, level: str, message: str):
+        ts = QDateTime.currentDateTime().toString("HH:mm:ss")
+        color_map = {
+            "INFO": LOG_INFO,
+            "OK": LOG_SUCCESS,
+            "WARN": LOG_WARN,
+            "ERROR": LOG_ERROR,
+        }
+        color = color_map.get(level, LOG_TEXT)
+
+        self._text.moveCursor(QTextCursor.End)
+        self._text.insertHtml(
+            f'<span style="color:{LOG_TIMESTAMP};">[{ts}]</span> '
+            f'<span style="color:{color}; font-weight:bold;">[{level}]</span> '
+            f'<span style="color:{LOG_TEXT};">{message}</span><br>'
+        )
+        # 自动滚动到底部
+        self._text.moveCursor(QTextCursor.End)
 
 
 # ── 属性面板 ──────────────────────────────────────────
@@ -449,6 +555,10 @@ class PropertyPanel(QWidget):
             self._add_overlay_params(node)
         elif cls_name == "CropNode":
             pass  # 算法选择由 PropertyPanel 自动处理，无额外参数
+        elif cls_name == "ObjectDetectionNode":
+            self._add_object_detection_params(node)
+        elif cls_name == "ClassificationNode":
+            self._add_classification_params(node)
         elif cls_name == "ImageOutputNode":
             self._add_output_params(node)
 
@@ -565,6 +675,142 @@ class PropertyPanel(QWidget):
         elif algo == "半透明填充":
             self._add_double_spin("透明度 (alpha):", "alpha",
                                   node, (0.1, 0.9), step=0.05)
+
+    # ── ObjectDetection ────────────────────────────────
+
+    def _add_object_detection_params(self, node):
+        # 模型文件
+        path_layout = QHBoxLayout()
+        path_edit = QLineEdit()
+        path_edit.setText(node.model_path)
+        path_edit.setPlaceholderText("选择 ONNX 模型文件...")
+        path_edit.setStyleSheet(self._input_style())
+        path_edit.textChanged.connect(lambda v: setattr(node, "model_path", v))
+        path_layout.addWidget(path_edit)
+        browse_btn = QPushButton("...")
+        browse_btn.setFixedWidth(32)
+        browse_btn.setStyleSheet(self._btn_style())
+        browse_btn.clicked.connect(lambda: self._browse_onnx(node, path_edit))
+        path_layout.addWidget(browse_btn)
+        self._form_layout.addRow("模型文件:", path_layout)
+
+        w_spin = QSpinBox()
+        w_spin.setRange(32, 4096)
+        w_spin.setValue(node.input_width)
+        w_spin.setStyleSheet(self._input_style())
+        w_spin.valueChanged.connect(lambda v: setattr(node, "input_width", v))
+        self._form_layout.addRow("输入宽度 (W):", w_spin)
+
+        h_spin = QSpinBox()
+        h_spin.setRange(32, 4096)
+        h_spin.setValue(node.input_height)
+        h_spin.setStyleSheet(self._input_style())
+        h_spin.valueChanged.connect(lambda v: setattr(node, "input_height", v))
+        self._form_layout.addRow("输入高度 (H):", h_spin)
+
+        # 置信度阈值
+        conf_spin = QDoubleSpinBox()
+        conf_spin.setRange(0.05, 1.0)
+        conf_spin.setSingleStep(0.05)
+        conf_spin.setValue(node.conf_threshold)
+        conf_spin.setStyleSheet(self._input_style())
+        conf_spin.valueChanged.connect(lambda v: setattr(node, "conf_threshold", v))
+        self._form_layout.addRow("置信度阈值:", conf_spin)
+
+        # IoU 阈值
+        iou_spin = QDoubleSpinBox()
+        iou_spin.setRange(0.1, 1.0)
+        iou_spin.setSingleStep(0.05)
+        iou_spin.setValue(node.iou_threshold)
+        iou_spin.setStyleSheet(self._input_style())
+        iou_spin.valueChanged.connect(lambda v: setattr(node, "iou_threshold", v))
+        self._form_layout.addRow("IoU 阈值 (NMS):", iou_spin)
+
+        # 类别数量
+        cls_spin = QSpinBox()
+        cls_spin.setRange(1, 1000)
+        cls_spin.setValue(node.num_classes)
+        cls_spin.setStyleSheet(self._input_style())
+        cls_spin.valueChanged.connect(lambda v: setattr(node, "num_classes", v))
+        self._form_layout.addRow("类别数量:", cls_spin)
+
+        # 输出框类型
+        self._add_combo("输出框类型:", "box_type", node, ["矩形", "圆形"])
+
+        # 输出格式
+        self._add_combo("YOLO输出格式:", "output_layout", node, ["xyxy", "cxcywh"])
+
+        # 坐标模式
+        self._add_combo("坐标模式:", "coord_mode", node,
+                        ["normalized", "pixel"])
+
+        # 推理设备
+        self._add_combo("推理设备:", "device", node, ["GPU", "CPU"])
+
+    def _browse_onnx(self, node, path_edit: QLineEdit):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择 ONNX 模型文件", "",
+            "ONNX 模型 (*.onnx);;所有文件 (*)"
+        )
+        if path:
+            path_edit.setText(path)
+            node.model_path = path
+
+    # ── Classification ─────────────────────────────────
+
+    def _add_classification_params(self, node):
+        # 模型文件
+        path_layout = QHBoxLayout()
+        path_edit = QLineEdit()
+        path_edit.setText(node.model_path)
+        path_edit.setPlaceholderText("选择 ONNX 模型文件...")
+        path_edit.setStyleSheet(self._input_style())
+        path_edit.textChanged.connect(lambda v: setattr(node, "model_path", v))
+        path_layout.addWidget(path_edit)
+        browse_btn = QPushButton("...")
+        browse_btn.setFixedWidth(32)
+        browse_btn.setStyleSheet(self._btn_style())
+        browse_btn.clicked.connect(lambda: self._browse_onnx(node, path_edit))
+        path_layout.addWidget(browse_btn)
+        self._form_layout.addRow("模型文件:", path_layout)
+
+        w_spin = QSpinBox()
+        w_spin.setRange(32, 4096)
+        w_spin.setValue(node.input_width)
+        w_spin.setStyleSheet(self._input_style())
+        w_spin.valueChanged.connect(lambda v: setattr(node, "input_width", v))
+        self._form_layout.addRow("输入宽度 (W):", w_spin)
+
+        h_spin = QSpinBox()
+        h_spin.setRange(32, 4096)
+        h_spin.setValue(node.input_height)
+        h_spin.setStyleSheet(self._input_style())
+        h_spin.valueChanged.connect(lambda v: setattr(node, "input_height", v))
+        self._form_layout.addRow("输入高度 (H):", h_spin)
+
+        conf_spin = QDoubleSpinBox()
+        conf_spin.setRange(0.05, 1.0)
+        conf_spin.setSingleStep(0.05)
+        conf_spin.setValue(node.conf_threshold)
+        conf_spin.setStyleSheet(self._input_style())
+        conf_spin.valueChanged.connect(lambda v: setattr(node, "conf_threshold", v))
+        self._form_layout.addRow("置信度阈值:", conf_spin)
+
+        cls_spin = QSpinBox()
+        cls_spin.setRange(1, 10000)
+        cls_spin.setValue(node.num_classes)
+        cls_spin.setStyleSheet(self._input_style())
+        cls_spin.valueChanged.connect(lambda v: setattr(node, "num_classes", v))
+        self._form_layout.addRow("类别数量:", cls_spin)
+
+        topk_spin = QSpinBox()
+        topk_spin.setRange(1, 20)
+        topk_spin.setValue(node.top_k)
+        topk_spin.setStyleSheet(self._input_style())
+        topk_spin.valueChanged.connect(lambda v: setattr(node, "top_k", v))
+        self._form_layout.addRow("显示 Top-K:", topk_spin)
+
+        self._add_combo("推理设备:", "device", node, ["GPU", "CPU"])
 
     # ── Smoothing ──────────────────────────────────────
 
@@ -873,7 +1119,11 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # 左侧节点面板
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setStyleSheet("QSplitter::handle { background: #3a3a40; }")
+        splitter.setHandleWidth(1)
+
+        # ── 左侧：节点面板 ────────────────────────────
         left_panel = QWidget()
         left_panel.setFixedWidth(210)
         left_panel.setStyleSheet(f"background: {SIDEBAR_BG};")
@@ -881,18 +1131,28 @@ class MainWindow(QMainWindow):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(NodePanel())
 
-        # 中间画布
+        # ── 中间：画布（上） + 日志（下） ──────────────
+        center_widget = QWidget()
+        center_widget.setStyleSheet("background: #1e1e23;")
+        center_layout = QVBoxLayout(center_widget)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(0)
+
         self.scene = NodeScene(self.engine)
         self.canvas = NodeCanvas(self.scene)
         self.canvas.setAcceptDrops(True)
         self.canvas.dragEnterEvent = self._canvas_drag_enter
         self.canvas.dragMoveEvent = self._canvas_drag_move
         self.canvas.dropEvent = self._canvas_drop
-
-        # 监听选中变化
         self.scene.selectionChanged.connect(self._on_selection_changed)
+        center_layout.addWidget(self.canvas, stretch=1)
 
-        # 右侧属性面板
+        self.log_panel = LogPanel()
+        self.log_panel.setFixedHeight(150)
+        self.log_panel.setStyleSheet("background: #1a1a1f;")
+        center_layout.addWidget(self.log_panel)
+
+        # ── 右侧：属性面板 ────────────────────────────
         right_panel = QWidget()
         right_panel.setFixedWidth(240)
         right_panel.setStyleSheet(f"background: {SIDEBAR_BG};")
@@ -901,20 +1161,14 @@ class MainWindow(QMainWindow):
         self.property_panel = PropertyPanel()
         right_layout.addWidget(self.property_panel)
 
-        # 分割器
-        splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(left_panel)
-        splitter.addWidget(self.canvas)
+        splitter.addWidget(center_widget)
         splitter.addWidget(right_panel)
         splitter.setSizes([210, 950, 240])
-        splitter.setHandleWidth(1)
-        splitter.setStyleSheet("QSplitter::handle { background: #3a3a40; }")
         main_layout.addWidget(splitter)
 
-        # 菜单栏
+        # 菜单栏 / 工具栏
         self._build_menubar()
-
-        # 工具栏
         self._build_toolbar()
 
     def _build_menubar(self):
@@ -1006,6 +1260,7 @@ class MainWindow(QMainWindow):
                 scene_pos = self.canvas.mapToScene(event.pos())
                 self.scene.add_node(cls, scene_pos)
                 self.status_bar.showMessage(f"已添加: {node_name}")
+                self.log_panel.info(f"添加节点: {node_name}")
             event.acceptProposedAction()
 
     # ── 节点操作 ──────────────────────────────────────
@@ -1020,6 +1275,7 @@ class MainWindow(QMainWindow):
         )
         self.scene.add_node(node_cls, view_center + offset)
         self.status_bar.showMessage(f"已添加: {node_cls.display_name}")
+        self.log_panel.info(f"添加节点: {node_cls.display_name}")
 
     def _clear_canvas(self):
         reply = QMessageBox.question(
@@ -1032,6 +1288,7 @@ class MainWindow(QMainWindow):
                 self.scene.remove_node_item(item)
             self.property_panel.set_node(None)
             self.status_bar.showMessage("画布已清空")
+            self.log_panel.warn("画布已清空")
 
     def _fit_canvas(self):
         if self.scene.node_items:
@@ -1062,17 +1319,35 @@ class MainWindow(QMainWindow):
             return
 
         self.status_bar.showMessage("正在执行流程...")
+        self.log_panel.info(f"开始执行流程 — {len(self.engine.nodes)} 个节点")
         self._runner = FlowRunner(self.engine)
         self._runner.finished.connect(self._on_flow_finished)
         self._runner.error.connect(self._on_flow_error)
+        self._runner.node_started.connect(
+            lambda name: self.log_panel.info(f"正在执行: {name}")
+        )
+        self._runner.node_done.connect(
+            lambda name: self.log_panel.success(f"执行完成: {name}")
+        )
+        self._runner.node_error.connect(
+            lambda name, msg: self.log_panel.error(f"节点错误 [{name}]: {msg}")
+        )
         self._runner.start()
 
     def _on_flow_finished(self, results):
         self._runner = None
         self.status_bar.showMessage("流程执行完成 ✓")
+        self.log_panel.success("流程执行完成")
+
+        # 输出检测/分类结果到日志
+        for node in self.engine.nodes:
+            summary = getattr(node, "_result_summary", "")
+            if summary:
+                for line in summary.split("\n"):
+                    self.log_panel.info(f"  [{node.display_name}] {line}")
+
         self._update_node_statuses()
         self.property_panel.refresh_output_preview()
-        # 在主线程中显示输出节点的图像（避免 QThread 中创建 GUI 对象）
         for node in self.engine.nodes:
             if hasattr(node, "_auto_show") and node._auto_show and node._last_image is not None:
                 node.show_last_result()
@@ -1080,6 +1355,7 @@ class MainWindow(QMainWindow):
     def _on_flow_error(self, err_msg):
         self._runner = None
         self.status_bar.showMessage("执行失败")
+        self.log_panel.error(f"流程执行失败:\n{err_msg}")
         QMessageBox.critical(
             self, "执行错误",
             f"流程执行过程中发生错误:\n\n{err_msg}"

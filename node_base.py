@@ -97,6 +97,7 @@ class ExecutionEngine:
     def __init__(self):
         self.nodes: list[Node] = []
         self.connections: list[Connection] = []
+        self._progress_callback: Optional[Callable[[str, str], None]] = None
 
     def add_node(self, node: Node):
         self.nodes.append(node)
@@ -181,13 +182,22 @@ class ExecutionEngine:
                             break
                     input_data[name] = source_data
 
+            cb = self._progress_callback
+            if cb:
+                cb(node.display_name, "start")
+
             try:
                 outputs = node.process(**input_data)
                 if outputs:
                     for port_name, value in outputs.items():
                         node.set_data(port_name, value)
             except Exception as e:
-                results[f"__error__{node.uid}"] = str(e)
+                if cb:
+                    cb(node.display_name, f"error: {e}")
+                raise
+
+            if cb:
+                cb(node.display_name, "done")
 
             results[node.uid] = {
                 "node": node.display_name,
