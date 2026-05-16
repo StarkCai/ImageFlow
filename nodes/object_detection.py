@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
-from node_base import Node
+from node_base import Node, format_regions
 from node_registry import register_node
 
 
@@ -87,8 +87,17 @@ class ObjectDetectionNode(Node):
 
     def _setup_ports(self):
         self.add_input("图像", data_type="图像")
+        self.add_input("类别映射", data_type="类别映射")
         self.add_output("图像", data_type="图像")
         self.add_output("区域", data_type="区域")
+
+    def _resolve_class_name(self, class_id: int, mapping: dict) -> str:
+        """根据类别映射将 class_id 转为名称，无映射时返回 #id。"""
+        if mapping:
+            name = mapping.get(str(class_id)) or mapping.get(class_id)
+            if name:
+                return f"{name}"
+        return f"#{class_id}"
 
     def _get_session(self):
         """加载 ONNX 会话，根据 device 选择推理后端。"""
@@ -119,6 +128,12 @@ class ObjectDetectionNode(Node):
         if img_rgb is None:
             raise ValueError("未接收到图像数据")
 
+        # 解析类别映射
+        class_mapping = {}
+        raw_mapping = inputs.get("类别映射")
+        if raw_mapping and isinstance(raw_mapping, dict):
+            class_mapping = raw_mapping.get("mapping", {})
+
         session = self._get_session()
         img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
         orig_h, orig_w = img_bgr.shape[:2]
@@ -140,10 +155,11 @@ class ObjectDetectionNode(Node):
         detections = self._parse_output(results, orig_w, orig_h, ratio, pad_x, pad_y)
 
         # 绘制
-        drawn = self._draw_detections(img_bgr, detections)
+        drawn = self._draw_detections(img_bgr, detections, class_mapping)
 
-        # 转为区域格式
-        regions = self._detections_to_regions(detections)
+        # 转为标准区域格式
+        regions_list = self._detections_to_regions(detections, class_mapping)
+        regions = format_regions(regions_list)
 
         # 生成结果摘要供日志
         self._result_summary = (
@@ -153,8 +169,9 @@ class ObjectDetectionNode(Node):
         )
         for d in detections:
             x1, y1, x2, y2 = [int(v) for v in d["box"]]
+            cls_name = self._resolve_class_name(d["class_id"], class_mapping)
             self._result_summary += (
-                f"\n  #{d['class_id']} conf={d['score']:.3f} "
+                f"\n  {cls_name} conf={d['score']:.3f} "
                 f"box=({x1},{y1})-({x2},{y2})"
             )
 
@@ -261,14 +278,18 @@ class ObjectDetectionNode(Node):
 
         return []
 
-    def _draw_detections(self, img_bgr: np.ndarray, detections: list) -> np.ndarray:
+    def _draw_detections(self, img_bgr: np.ndarray, detections: list,
+                         class_mapping: dict = None) -> np.ndarray:
         """在图像上绘制检测框。"""
+        if class_mapping is None:
+            class_mapping = {}
         result = img_bgr.copy()
         color = self.box_color
         for det in detections:
             x1, y1, x2, y2 = [int(v) for v in det["box"]]
             score = det["score"]
             cls_id = det["class_id"]
+            cls_name = self._resolve_class_name(cls_id, class_mapping)
 
             if self.box_type == "圆形":
                 cx = (x1 + x2) // 2
@@ -279,29 +300,38 @@ class ObjectDetectionNode(Node):
                 cv2.rectangle(result, (x1, y1), (x2, y2), color, self.box_thickness)
 
             # 标签
-            label = f"#{cls_id} {score:.2f}"
+            label = f"{cls_name} {score:.2f}"
             (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
             cv2.rectangle(result, (x1, y1 - th - 4), (x1 + tw + 4, y1), color, -1)
             cv2.putText(result, label, (x1 + 2, y1 - 2),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
         return result
 
-    def _detections_to_regions(self, detections: list) -> List[dict]:
+    def _detections_to_regions(self, detections: list,
+                               class_mapping: dict = None) -> List[dict]:
         """将检测结果转换为工程区域格式。"""
+        if class_mapping is None:
+            class_mapping = {}
         regions = []
         for det in detections:
             x1, y1, x2, y2 = [int(v) for v in det["box"]]
+            cls_id = det["class_id"]
+            cls_name = self._resolve_class_name(cls_id, class_mapping)
             if self.box_type == "圆形":
                 cx = (x1 + x2) // 2
                 cy = (y1 + y2) // 2
                 r = int(min(x2 - x1, y2 - y1) / 2)
                 regions.append({
                     "type": "圆形",
+                    "class_id": cls_id,
+                    "class": cls_name,
                     "coordinates": {"cx": cx, "cy": cy, "radius": max(r, 1)},
                 })
             else:
                 regions.append({
                     "type": "矩形",
+                    "class_id": cls_id,
+                    "class": cls_name,
                     "coordinates": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
                 })
         return regions

@@ -5,7 +5,7 @@ from typing import List
 import cv2
 import numpy as np
 
-from node_base import Node
+from node_base import Node, _extract_regions
 from node_registry import register_node
 
 # 颜色表（BGR 格式，用于 OpenCV 绘制）
@@ -22,21 +22,8 @@ REGION_COLORS = [
 
 
 def _flatten_regions(regions_raw) -> list:
-    """扁平化区域数据：处理单/多连线场景。
-
-    regions_raw 可能是：
-      - list[dict]：单个区域列表（单连线）
-      - list[list[dict]]：多个区域列表（多连线）
-    """
-    if not regions_raw:
-        return []
-    flat = []
-    for item in regions_raw:
-        if isinstance(item, list):
-            flat.extend(item)
-        elif isinstance(item, dict):
-            flat.append(item)
-    return flat
+    """扁平化区域数据：处理单/多连线场景，兼容新旧格式。"""
+    return _extract_regions(regions_raw)
 
 
 def _draw_region_outline(img_bgr: np.ndarray, region: dict, color: tuple, thickness: int = 2):

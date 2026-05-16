@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from node_base import Node
+from node_base import Node, format_regions
 from node_registry import register_node
 from nodes.image_input import _imread_unicode
 
@@ -758,7 +758,7 @@ class RegionInputNode(Node):
             raise ValueError("未设置图像/视频文件路径")
         if not self._regions:
             raise ValueError("未绘制区域，请在属性面板中点击「绘制区域」")
-        return {"区域": self._regions}
+        return {"区域": format_regions(self._regions)}
 
     def open_draw_dialog(self):
         if not self._file_path:

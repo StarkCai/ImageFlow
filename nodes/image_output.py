@@ -9,7 +9,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFileDialog, QScrollArea, QMessageBox,
+    QFileDialog, QMessageBox,
 )
 
 from node_base import Node
@@ -44,41 +44,65 @@ def _imwrite_unicode(filepath: str, img: np.ndarray) -> bool:
 
 
 class ImageViewerDialog(QDialog):
-    """图像预览弹窗，支持中文路径保存。"""
+    """图像预览弹窗，图像自适应窗口大小，支持中文路径保存。"""
 
     def __init__(self, pixmap: QPixmap, raw_image: Optional[np.ndarray] = None,
-                 title: str = "结果预览", parent=None):
+                 title: str = "图像预览", parent=None):
         super().__init__(parent)
         self._pixmap = pixmap
         self._raw = raw_image
         self._title = title
         self.setWindowTitle(title)
         self.setMinimumSize(400, 300)
-        self.resize(800, 600)
+        self.resize(900, 680)
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setAlignment(Qt.AlignCenter)
-
-        label = QLabel()
-        label.setPixmap(self._pixmap)
-        label.setAlignment(Qt.AlignCenter)
-        label.setStyleSheet("background: #1e1e1e; border: none;")
-
-        scroll.setWidget(label)
-        layout.addWidget(scroll)
+        self._label = QLabel()
+        self._label.setAlignment(Qt.AlignCenter)
+        self._label.setStyleSheet("background: #1e1e1e; border: none;")
+        self._label.setSizePolicy(
+            QLabel().sizePolicy().horizontalPolicy(),
+            QLabel().sizePolicy().verticalPolicy(),
+        )
+        # 初始显示原始尺寸的图，由 resizeEvent 驱动缩放
+        self._label.setPixmap(self._pixmap)
+        layout.addWidget(self._label, stretch=1)
 
         btn_layout = QHBoxLayout()
-        save_btn = QPushButton("保存图像")
-        save_btn.clicked.connect(self._on_save)
         btn_layout.addStretch()
+        save_btn = QPushButton("保存图像")
+        save_btn.setStyleSheet(
+            "QPushButton { background: #5a9cf8; color: #fff; border: none; "
+            "border-radius: 4px; padding: 6px 16px; font-size: 12px; }"
+            "QPushButton:hover { background: #7ab4ff; }"
+        )
+        save_btn.clicked.connect(self._on_save)
         btn_layout.addWidget(save_btn)
-
         layout.addLayout(btn_layout)
+
+        # 加载时立即缩放一次
+        self._scale_pixmap()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._scale_pixmap()
+
+    def _scale_pixmap(self):
+        """将图像缩放到适应当前窗口大小，保持宽高比。"""
+        if self._pixmap.isNull():
+            return
+        avail = self._label.size()
+        if avail.width() <= 0 or avail.height() <= 0:
+            return
+        scaled = self._pixmap.scaled(
+            avail, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        self._label.setPixmap(scaled)
 
     def _on_save(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -98,11 +122,11 @@ class ImageViewerDialog(QDialog):
 
 @register_node
 class ImageOutputNode(Node):
-    display_name = "结果输出"
+    display_name = "图像输出"
     category = "输出"
 
     def __init__(self):
-        self._auto_show: bool = True
+        self._auto_show: bool = False
         self._save_dir: str = ""
         self._last_image: Optional[np.ndarray] = None
         super().__init__()

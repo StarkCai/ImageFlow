@@ -5,7 +5,7 @@ from typing import List
 import cv2
 import numpy as np
 
-from node_base import Node
+from node_base import Node, _extract_regions
 from node_registry import register_node
 
 
@@ -80,21 +80,7 @@ class CropNode(Node):
         if img_rgb is None:
             raise ValueError("未接收到图像数据")
 
-        regions_raw = inputs.get("区域")
-        if not regions_raw:
-            raise ValueError("未接收到区域数据")
-
-        # 处理单区域 dict 或区域列表
-        if isinstance(regions_raw, dict):
-            regions = [regions_raw]
-        elif isinstance(regions_raw, list) and regions_raw and isinstance(regions_raw[0], dict):
-            regions = regions_raw
-        elif isinstance(regions_raw, list) and regions_raw and isinstance(regions_raw[0], list):
-            # 列表的列表（来自多连线输入），取第一个
-            regions = regions_raw[0] if isinstance(regions_raw[0], list) else [regions_raw[0]]
-        else:
-            regions = []
-
+        regions = _extract_regions(inputs.get("区域"))
         if not regions:
             raise ValueError("区域数据为空")
 

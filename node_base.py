@@ -205,3 +205,60 @@ class ExecutionEngine:
             }
 
         return results
+
+
+# ── 区域标准格式工具 ──────────────────────────────────
+#
+# 标准输出格式 (region_input / object_detection 等节点遵循):
+#   {"regions": [
+#       {"id": 1, "type": "矩形", "class": None, "coordinates": {"x1":..., "y1":..., "x2":..., "y2":...}},
+#       {"id": 2, "type": "圆形", "class": None, "coordinates": {"cx":..., "cy":..., "radius":...}},
+#       {"id": 3, "type": "多边形", "class": None, "coordinates": {"points": [[x1,y1],...]}},
+#   ]}
+#
+# 消费者节点 (overlay / crop 等) 通过 _extract_regions() 兼容新旧格式。
+
+
+def format_regions(regions: list) -> dict:
+    """将区域列表包装为标准输出格式，自动分配 id (从 1 开始)。"""
+    out = []
+    for i, r in enumerate(regions):
+        item = {
+            "id": i + 1,
+            "type": r["type"],
+            "class": r.get("class_id") if "class_id" in r else r.get("class"),
+            "coordinates": r["coordinates"],
+        }
+        out.append(item)
+    return {"regions": out}
+
+
+def _extract_regions(data) -> list:
+    """从各种可能的区域数据格式中提取区域列表（兼容新旧格式与连线方式）。
+
+    支持:
+      - 标准格式: {"regions": [{...}, ...]}
+      - 旧格式(单区域): {"type": "...", "coordinates": {...}}
+      - 旧格式(列表): [{"type": "...", ...}, ...]
+      - 多连线列表: [{"regions": [...]}, ...] 或 [[...], [...]]
+    """
+    if not data:
+        return []
+    if isinstance(data, dict):
+        if "regions" in data:
+            return data["regions"]
+        if "type" in data:
+            return [data]
+        return []
+    if isinstance(data, list):
+        flat = []
+        for item in data:
+            if isinstance(item, dict):
+                if "regions" in item:
+                    flat.extend(item["regions"])
+                elif "type" in item:
+                    flat.append(item)
+            elif isinstance(item, list):
+                flat.extend(item)
+        return flat
+    return []

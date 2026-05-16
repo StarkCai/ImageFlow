@@ -438,8 +438,7 @@ class PropertyPanel(QWidget):
         self._form_layout.setLabelAlignment(Qt.AlignLeft)
 
         scroll.setWidget(self._form_container)
-        layout.addWidget(scroll)
-        layout.addStretch()
+        layout.addWidget(scroll, stretch=1)
 
         self._set_algo_area_visible(False)
 
@@ -523,6 +522,18 @@ class PropertyPanel(QWidget):
         )
         preview.setPixmap(scaled)
 
+    def _refresh_region_output_from_nodes(self, nodes):
+        """执行后刷新当前选中节点（如果是 RegionOutputNode）的信息。"""
+        node = self._current_node
+        if node is None:
+            # 尝试从执行节点中找 RegionOutputNode 刷新
+            for n in nodes:
+                if n.__class__.__name__ == "RegionOutputNode":
+                    self._refresh_region_output(n)
+            return
+        if node.__class__.__name__ == "RegionOutputNode":
+            self._refresh_region_output(node)
+
     def _add_node_params(self, node: Node):
         """根据节点类型动态创建参数控件。"""
         cls_name = node.__class__.__name__
@@ -551,6 +562,8 @@ class PropertyPanel(QWidget):
             pass  # 颜色空间转换无需额外参数，算法即转换类型
         elif cls_name == "RegionInputNode":
             self._add_region_input_params(node)
+        elif cls_name == "ClassMappingNode":
+            self._add_class_mapping_params(node)
         elif cls_name == "OverlayNode":
             self._add_overlay_params(node)
         elif cls_name == "CropNode":
@@ -559,6 +572,8 @@ class PropertyPanel(QWidget):
             self._add_object_detection_params(node)
         elif cls_name == "ClassificationNode":
             self._add_classification_params(node)
+        elif cls_name == "RegionOutputNode":
+            self._add_region_output_params(node)
         elif cls_name == "ImageOutputNode":
             self._add_output_params(node)
 
@@ -663,6 +678,56 @@ class PropertyPanel(QWidget):
         color = "#5cb878" if count > 0 else "#9a9aa0"
         self._region_count_label.setText(text)
         self._region_count_label.setStyleSheet(
+            f"color: {color}; font-size: 11px; padding: 4px 0; background: transparent;"
+        )
+
+    # ── ClassMapping ──────────────────────────────────
+
+    def _add_class_mapping_params(self, node):
+        path_layout = QHBoxLayout()
+        path_edit = QLineEdit()
+        path_edit.setText(node.json_path)
+        path_edit.setPlaceholderText("选择类别映射 JSON 文件...")
+        path_edit.setStyleSheet(self._input_style())
+        path_edit.textChanged.connect(lambda v: setattr(node, "json_path", v))
+        path_layout.addWidget(path_edit)
+
+        browse_btn = QPushButton("...")
+        browse_btn.setFixedWidth(32)
+        browse_btn.setStyleSheet(self._btn_style())
+        browse_btn.clicked.connect(
+            lambda: self._browse_json_file(node, path_edit)
+        )
+        path_layout.addWidget(browse_btn)
+        self._form_layout.addRow("映射文件:", path_layout)
+
+        self._mapping_label = QLabel()
+        self._refresh_mapping_label(node)
+        self._form_layout.addRow("", self._mapping_label)
+
+    def _browse_json_file(self, node, path_edit: QLineEdit):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择类别映射 JSON 文件", "",
+            "JSON 文件 (*.json);;所有文件 (*)"
+        )
+        if path:
+            path_edit.setText(path)
+            node.json_path = path
+            self._refresh_mapping_label(node)
+
+    def _refresh_mapping_label(self, node):
+        mapping = getattr(node, "_mapping", {})
+        if mapping:
+            items = list(mapping.items())[:6]
+            text = "\n".join(f"  {k} → {v}" for k, v in items)
+            if len(mapping) > 6:
+                text += f"\n  ... 共 {len(mapping)} 类"
+            color = "#5cb878"
+        else:
+            text = "尚未加载映射文件"
+            color = "#9a9aa0"
+        self._mapping_label.setText(text)
+        self._mapping_label.setStyleSheet(
             f"color: {color}; font-size: 11px; padding: 4px 0; background: transparent;"
         )
 
@@ -811,6 +876,63 @@ class PropertyPanel(QWidget):
         self._form_layout.addRow("显示 Top-K:", topk_spin)
 
         self._add_combo("推理设备:", "device", node, ["GPU", "CPU"])
+
+    # ── RegionOutput ───────────────────────────────────
+
+    def _add_region_output_params(self, node):
+        # 摘要标签
+        summary_lbl = QLabel(node.region_summary)
+        summary_lbl.setStyleSheet(
+            f"color: {SIDEBAR_TEXT}; font-size: 12px; "
+            f"background: #1e1e24; border-radius: 4px; padding: 8px;"
+        )
+        summary_lbl.setWordWrap(True)
+        self._form_layout.addRow("", summary_lbl)
+        self._region_summary_lbl = summary_lbl
+
+        # JSON 预览（截取前几行）
+        json_lbl = QLabel()
+        json_lbl.setFont(QFont("Consolas", 9))
+        json_lbl.setStyleSheet(
+            f"color: {SIDEBAR_DIM}; font-size: 10px; "
+            f"background: #15151a; border: 1px solid #333; "
+            f"border-radius: 4px; padding: 6px;"
+        )
+        json_lbl.setWordWrap(True)
+        if node._last_json:
+            preview = node._last_json[:800] + ("..." if len(node._last_json) > 800 else "")
+            json_lbl.setText(preview)
+        else:
+            json_lbl.setText("暂无数据\n请先执行流程")
+        self._form_layout.addRow("", json_lbl)
+        self._region_json_lbl = json_lbl
+
+        # 按钮
+        detail_btn = QPushButton("详细显示")
+        detail_btn.setStyleSheet(self._btn_style())
+        detail_btn.clicked.connect(lambda: self._on_region_detail(node))
+        self._form_layout.addRow("", detail_btn)
+
+        save_btn = QPushButton("下载 JSON")
+        save_btn.setStyleSheet(self._btn_style())
+        save_btn.clicked.connect(lambda: self._on_region_download(node))
+        self._form_layout.addRow("", save_btn)
+
+    def _refresh_region_output(self, node):
+        """执行后刷新区域输出面板显示。"""
+        if getattr(self, "_region_summary_lbl", None):
+            self._region_summary_lbl.setText(node.region_summary)
+        if getattr(self, "_region_json_lbl", None) and node._last_json:
+            text = node._last_json[:800]
+            if len(node._last_json) > 800:
+                text += "..."
+            self._region_json_lbl.setText(text)
+
+    def _on_region_detail(self, node):
+        node.show_detail()
+
+    def _on_region_download(self, node):
+        node.save_json()
 
     # ── Smoothing ──────────────────────────────────────
 
@@ -1037,6 +1159,11 @@ class PropertyPanel(QWidget):
 
         self._add_check("执行后自动显示", "_auto_show", node)
 
+        show_btn = QPushButton("显示图像")
+        show_btn.setStyleSheet(self._btn_style())
+        show_btn.clicked.connect(self._on_output_show)
+        self._form_layout.addRow("", show_btn)
+
         save_btn = QPushButton("保存到文件")
         save_btn.setStyleSheet(self._btn_style())
         save_btn.clicked.connect(self._on_output_save)
@@ -1065,6 +1192,13 @@ class PropertyPanel(QWidget):
         if path:
             path_edit.setText(path)
             node.file_path = path
+
+    def _on_output_show(self):
+        node = self._current_node
+        if node is None or node._last_image is None:
+            QMessageBox.information(self, "提示", "请先执行流程生成结果图像。")
+            return
+        node.show_last_result()
 
     def _on_output_save(self):
         node = self._current_node
@@ -1348,6 +1482,13 @@ class MainWindow(QMainWindow):
 
         self._update_node_statuses()
         self.property_panel.refresh_output_preview()
+        self.property_panel._refresh_region_output_from_nodes(self.engine.nodes)
+        # 刷新类别映射标签
+        if self.property_panel._current_node is not None and \
+                hasattr(self.property_panel._current_node, "json_path"):
+            self.property_panel._refresh_mapping_label(
+                self.property_panel._current_node
+            )
         for node in self.engine.nodes:
             if hasattr(node, "_auto_show") and node._auto_show and node._last_image is not None:
                 node.show_last_result()
