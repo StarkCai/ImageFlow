@@ -1,9 +1,12 @@
 """节点包初始化，导入所有算子以触发注册。"""
 
 from nodes.image_input import ImageInputNode
-from nodes.grayscale import GrayscaleNode
-from nodes.blur import BlurNode
+from nodes.smoothing import SmoothingNode
 from nodes.edge_detect import EdgeDetectNode
 from nodes.threshold import ThresholdNode
-from nodes.resize import ResizeNode
+from nodes.geometry import GeometryTransformNode
+from nodes.morphology import MorphologyNode
+from nodes.enhancement import EnhancementNode
+from nodes.frequency import FrequencyNode
+from nodes.segmentation import SegmentationNode
 from nodes.image_output import ImageOutputNode

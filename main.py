@@ -14,7 +14,7 @@ import os
 import traceback
 from typing import Type, Optional
 
-from PyQt5.QtCore import Qt, QMimeData, QPointF, QSize, QTimer
+from PyQt5.QtCore import Qt, QMimeData, QPointF, QSize, QTimer, QThread, pyqtSignal
 from PyQt5.QtGui import (
     QFont, QColor, QPalette, QDrag, QPixmap, QPainter, QPen, QBrush, QIcon,
 )
@@ -50,6 +50,25 @@ DANGER = "#e05560"
 SUCCESS = "#5cb878"
 
 
+# ── 异步流程执行器 ────────────────────────────────────
+class FlowRunner(QThread):
+    """在后台线程中执行节点流程，避免阻塞 UI 并防止算法错误导致主界面崩溃。"""
+
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, engine: ExecutionEngine):
+        super().__init__()
+        self.engine = engine
+
+    def run(self):
+        try:
+            results = self.engine.execute()
+            self.finished.emit(results)
+        except Exception:
+            self.error.emit(traceback.format_exc())
+
+
 # ── 可拖拽的节点列表 ─────────────────────────────────
 class NodeListItem(QWidget):
     """节点面板中的每一项，支持拖拽。"""
@@ -57,7 +76,7 @@ class NodeListItem(QWidget):
     def __init__(self, node_cls: Type[Node], parent=None):
         super().__init__(parent)
         self.node_cls = node_cls
-        self.setToolTip(f"{node_cls.category} → {node_cls.display_name}")
+        self.setToolTip(f"{node_cls.category} -> {node_cls.display_name}")
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 5, 8, 5)
@@ -196,7 +215,10 @@ class NodePanel(QWidget):
 
 # ── 属性面板 ──────────────────────────────────────────
 class PropertyPanel(QWidget):
-    """右侧属性编辑面板，显示选中节点的可配置参数。"""
+    """右侧属性编辑面板。
+    上半区域：算法选择（仅多算法节点显示）
+    下半区域：算子参数配置。
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -209,7 +231,7 @@ class PropertyPanel(QWidget):
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 8, 6, 8)
-        layout.setSpacing(6)
+        layout.setSpacing(4)
 
         title = QLabel("属性面板")
         title.setFont(QFont("Microsoft YaHei", 11, QFont.Bold))
@@ -221,7 +243,30 @@ class PropertyPanel(QWidget):
         self._hint.setWordWrap(True)
         layout.addWidget(self._hint)
 
-        layout.addSpacing(4)
+        # 上半区域：算法选择
+        algo_title = QLabel("算法选择")
+        algo_title.setFont(QFont("Microsoft YaHei", 9, QFont.Bold))
+        algo_title.setStyleSheet(f"color: {ACCENT}; padding: 4px 0; background: transparent;")
+        layout.addWidget(algo_title)
+        self._algo_title = algo_title
+
+        self._algo_combo = QComboBox()
+        self._algo_combo.setStyleSheet(self._input_style())
+        self._algo_combo.currentTextChanged.connect(self._on_algorithm_changed)
+        layout.addWidget(self._algo_combo)
+
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.HLine)
+        sep1.setStyleSheet("background: #444;")
+        layout.addWidget(sep1)
+        self._algo_sep = sep1
+
+        # 下半区域：算子参数
+        param_title = QLabel("算子参数")
+        param_title.setFont(QFont("Microsoft YaHei", 9, QFont.Bold))
+        param_title.setStyleSheet(f"color: {ACCENT}; padding: 4px 0; background: transparent;")
+        layout.addWidget(param_title)
+        self._param_title = param_title
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -243,18 +288,55 @@ class PropertyPanel(QWidget):
         layout.addWidget(scroll)
         layout.addStretch()
 
+        self._set_algo_area_visible(False)
+
+    def _set_algo_area_visible(self, visible: bool):
+        self._algo_title.setVisible(visible)
+        self._algo_combo.setVisible(visible)
+        self._algo_sep.setVisible(visible)
+
+    def _on_algorithm_changed(self, text: str):
+        if self._current_node is None:
+            return
+        if not hasattr(self._current_node, "algorithm"):
+            return
+        self._current_node.algorithm = text
+        self._rebuild_params()
+
+    def _rebuild_params(self):
+        """重建参数区域（算法切换时调用）。"""
+        node = self._current_node
+        if node is None:
+            return
+        self._clear_params()
+        self._add_node_params(node)
+
     def set_node(self, node: Optional[Node], item: Optional[NodeItem] = None):
         """加载节点属性到面板。"""
         self._current_node = node
         self._current_item = item
-        self._clear_form()
+        self._clear_params()
 
         if node is None:
             self._hint.setText("选择一个节点以编辑参数")
             self._hint.setVisible(True)
+            self._set_algo_area_visible(False)
             return
 
         self._hint.setVisible(False)
+
+        # 算法选择区域（仅多算法节点）
+        algos = getattr(node, "algorithms", None)
+        if algos and len(algos) > 1:
+            self._algo_combo.blockSignals(True)
+            self._algo_combo.clear()
+            self._algo_combo.addItems(algos)
+            current = getattr(node, "algorithm", algos[0])
+            self._algo_combo.setCurrentText(current)
+            self._algo_combo.blockSignals(False)
+            self._set_algo_area_visible(True)
+        else:
+            self._set_algo_area_visible(False)
 
         # 节点标题
         title_label = QLabel(f"{node.display_name}")
@@ -263,25 +345,14 @@ class PropertyPanel(QWidget):
         )
         self._form_layout.addRow(title_label)
 
-        uid_label = QLabel(f"ID: {node.uid}")
-        uid_label.setStyleSheet(f"color: {SIDEBAR_DIM}; font-size: 10px; background: transparent;")
-        self._form_layout.addRow(uid_label)
-
-        # 分隔线
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("background: #444;")
-        self._form_layout.addRow(sep)
-
-        # 为特定节点类型添加参数编辑器
+        # 参数
         self._add_node_params(node)
 
-    def _clear_form(self):
+    def _clear_params(self):
+        """清空参数区域。"""
         self._preview_label = None
-        # 逐行移除所有表单项
         while self._form_layout.rowCount() > 0:
             self._form_layout.removeRow(0)
-        # 删除残留的子控件（包括嵌套布局中的控件）
         for child in self._form_container.findChildren(QWidget):
             child.deleteLater()
 
@@ -305,24 +376,63 @@ class PropertyPanel(QWidget):
 
         if cls_name == "ImageInputNode":
             self._add_image_input_params(node)
-
-        elif cls_name == "GrayscaleNode":
-            self._add_grayscale_params(node)
-
-        elif cls_name == "BlurNode":
-            self._add_blur_params(node)
-
+        elif cls_name == "SmoothingNode":
+            self._add_smoothing_params(node)
         elif cls_name == "EdgeDetectNode":
             self._add_edge_params(node)
-
         elif cls_name == "ThresholdNode":
             self._add_threshold_params(node)
-
-        elif cls_name == "ResizeNode":
-            self._add_resize_params(node)
-
+        elif cls_name == "GeometryTransformNode":
+            self._add_geometry_params(node)
+        elif cls_name == "MorphologyNode":
+            self._add_morphology_params(node)
+        elif cls_name == "EnhancementNode":
+            self._add_enhancement_params(node)
+        elif cls_name == "FrequencyNode":
+            self._add_frequency_params(node)
+        elif cls_name == "SegmentationNode":
+            self._add_segmentation_params(node)
         elif cls_name == "ImageOutputNode":
             self._add_output_params(node)
+
+    # ── 参数控件辅助方法 ───────────────────────────────
+
+    def _add_spin(self, label: str, attr: str, node, rng: tuple, step=1):
+        spin = QSpinBox()
+        spin.setRange(*rng)
+        spin.setSingleStep(step)
+        spin.setValue(getattr(node, attr))
+        spin.setStyleSheet(self._input_style())
+        spin.valueChanged.connect(lambda v: setattr(node, attr, v))
+        self._form_layout.addRow(label, spin)
+
+    def _add_double_spin(self, label: str, attr: str, node, rng: tuple, step=0.1):
+        spin = QDoubleSpinBox()
+        spin.setRange(*rng)
+        spin.setSingleStep(step)
+        spin.setValue(getattr(node, attr))
+        spin.setStyleSheet(self._input_style())
+        spin.valueChanged.connect(lambda v: setattr(node, attr, v))
+        self._form_layout.addRow(label, spin)
+
+    def _add_combo(self, label: str, attr: str, node, items: list):
+        combo = QComboBox()
+        combo.addItems(items)
+        combo.setCurrentText(getattr(node, attr))
+        combo.setStyleSheet(self._input_style())
+        combo.currentTextChanged.connect(lambda v: setattr(node, attr, v))
+        self._form_layout.addRow(label, combo)
+
+    def _add_check(self, label: str, attr: str, node):
+        check = QCheckBox(label)
+        check.setChecked(getattr(node, attr))
+        check.setStyleSheet(
+            f"color: {SIDEBAR_TEXT}; background: transparent; spacing: 6px;"
+        )
+        check.toggled.connect(lambda v: setattr(node, attr, v))
+        self._form_layout.addRow("", check)
+
+    # ── ImageInput ─────────────────────────────────────
 
     def _add_image_input_params(self, node):
         path_layout = QHBoxLayout()
@@ -336,97 +446,169 @@ class PropertyPanel(QWidget):
         browse_btn = QPushButton("...")
         browse_btn.setFixedWidth(32)
         browse_btn.setStyleSheet(self._btn_style())
-        browse_btn.clicked.connect(
-            lambda: self._browse_image(node, path_edit)
-        )
+        browse_btn.clicked.connect(lambda: self._browse_image(node, path_edit))
         path_layout.addWidget(browse_btn)
 
         self._form_layout.addRow("文件路径:", path_layout)
 
-    def _add_grayscale_params(self, node):
-        method_combo = QComboBox()
-        method_combo.addItems(["luminosity", "average", "lightness"])
-        method_combo.setCurrentText(node.method)
-        method_combo.setStyleSheet(self._input_style())
-        method_combo.currentTextChanged.connect(lambda v: setattr(node, "method", v))
-        self._form_layout.addRow("转换方法:", method_combo)
+    # ── Smoothing ──────────────────────────────────────
 
-    def _add_blur_params(self, node):
-        ksize_spin = QSpinBox()
-        ksize_spin.setRange(1, 51)
-        ksize_spin.setSingleStep(2)
-        ksize_spin.setValue(node.kernel_size)
-        ksize_spin.setStyleSheet(self._input_style())
-        ksize_spin.valueChanged.connect(lambda v: setattr(node, "kernel_size", v))
-        self._form_layout.addRow("核大小:", ksize_spin)
+    def _add_smoothing_params(self, node):
+        algo = node.algorithm
 
-        sigma_spin = QDoubleSpinBox()
-        sigma_spin.setRange(0.1, 30.0)
-        sigma_spin.setSingleStep(0.5)
-        sigma_spin.setValue(node.sigma)
-        sigma_spin.setStyleSheet(self._input_style())
-        sigma_spin.valueChanged.connect(lambda v: setattr(node, "sigma", v))
-        self._form_layout.addRow("Sigma:", sigma_spin)
+        if algo in ("高斯模糊", "均值滤波", "中值滤波"):
+            self._add_spin("核大小:", "kernel_size", node, (1, 51), step=2)
+        elif algo == "双边滤波":
+            self._add_spin("核大小:", "kernel_size", node, (1, 51), step=2)
+            self._add_double_spin("颜色标准差 (sigma_color):", "sigma_color",
+                                  node, (1.0, 300.0))
+            self._add_double_spin("空间标准差 (sigma_space):", "sigma_space",
+                                  node, (1.0, 300.0))
+        elif algo == "引导滤波":
+            self._add_spin("窗口半径:", "radius", node, (1, 60))
+            self._add_double_spin("正则化 (epsilon):", "epsilon",
+                                  node, (0.0001, 1.0), step=0.001)
+
+    # ── EdgeDetect ─────────────────────────────────────
 
     def _add_edge_params(self, node):
-        t1_spin = QSpinBox()
-        t1_spin.setRange(0, 500)
-        t1_spin.setValue(node.threshold1)
-        t1_spin.setStyleSheet(self._input_style())
-        t1_spin.valueChanged.connect(lambda v: setattr(node, "threshold1", v))
-        self._form_layout.addRow("低阈值:", t1_spin)
+        algo = node.algorithm
 
-        t2_spin = QSpinBox()
-        t2_spin.setRange(0, 500)
-        t2_spin.setValue(node.threshold2)
-        t2_spin.setStyleSheet(self._input_style())
-        t2_spin.valueChanged.connect(lambda v: setattr(node, "threshold2", v))
-        self._form_layout.addRow("高阈值:", t2_spin)
+        if algo in ("Sobel", "Laplacian"):
+            self._add_spin("核大小:", "kernel_size", node, (1, 31), step=2)
+        elif algo == "Canny":
+            self._add_spin("核大小 (aperture):", "kernel_size", node, (3, 7), step=2)
+            self._add_spin("低阈值:", "threshold_low", node, (0, 500))
+            self._add_spin("高阈值:", "threshold_high", node, (0, 500))
+            self._add_double_spin("高斯 Sigma:", "sigma", node, (0.0, 10.0))
+        elif algo == "Roberts":
+            pass  # Roberts 使用固定 2x2 核，无需参数
+
+    # ── Threshold ──────────────────────────────────────
 
     def _add_threshold_params(self, node):
-        thresh_spin = QSpinBox()
-        thresh_spin.setRange(0, 255)
-        thresh_spin.setValue(node.threshold_value)
-        thresh_spin.setStyleSheet(self._input_style())
-        thresh_spin.valueChanged.connect(lambda v: setattr(node, "threshold_value", v))
-        self._form_layout.addRow("阈值:", thresh_spin)
+        algo = node.algorithm
 
-        method_combo = QComboBox()
-        method_combo.addItems(["binary", "binary_inv", "trunc", "tozero", "otsu"])
-        method_combo.setCurrentText(node.method)
-        method_combo.setStyleSheet(self._input_style())
-        method_combo.currentTextChanged.connect(lambda v: setattr(node, "method", v))
-        self._form_layout.addRow("方法:", method_combo)
+        if algo == "Binary阈值":
+            self._add_spin("阈值:", "threshold_value", node, (0, 255))
+            self._add_spin("最大值:", "max_value", node, (0, 255))
+        elif algo == "Otsu阈值":
+            self._add_spin("最大值:", "max_value", node, (0, 255))
+        elif algo == "自适应阈值":
+            self._add_spin("最大值:", "max_value", node, (0, 255))
+            self._add_spin("邻域块大小:", "block_size", node, (3, 99), step=2)
+            self._add_spin("常数偏移 C:", "C", node, (-50, 50))
 
-    def _add_resize_params(self, node):
-        w_spin = QSpinBox()
-        w_spin.setRange(1, 4096)
-        w_spin.setValue(node.width)
-        w_spin.setStyleSheet(self._input_style())
-        w_spin.valueChanged.connect(lambda v: setattr(node, "width", v))
-        self._form_layout.addRow("宽度:", w_spin)
+    # ── GeometryTransform ──────────────────────────────
 
-        h_spin = QSpinBox()
-        h_spin.setRange(1, 4096)
-        h_spin.setValue(node.height)
-        h_spin.setStyleSheet(self._input_style())
-        h_spin.valueChanged.connect(lambda v: setattr(node, "height", v))
-        self._form_layout.addRow("高度:", h_spin)
+    def _add_geometry_params(self, node):
+        algo = node.algorithm
 
-        aspect_check = QCheckBox("保持宽高比")
-        aspect_check.setChecked(node.keep_aspect)
-        aspect_check.setStyleSheet(
-            f"color: {SIDEBAR_TEXT}; background: transparent; spacing: 6px;"
-        )
-        aspect_check.toggled.connect(lambda v: setattr(node, "keep_aspect", v))
-        self._form_layout.addRow("", aspect_check)
+        if algo == "仿射变换":
+            self._add_double_spin("旋转角度:", "affine_angle",
+                                  node, (0.0, 360.0))
+            self._add_double_spin("X 缩放:", "affine_scale_x",
+                                  node, (0.1, 5.0), step=0.1)
+            self._add_double_spin("Y 缩放:", "affine_scale_y",
+                                  node, (0.1, 5.0), step=0.1)
+            self._add_spin("X 平移:", "affine_tx", node, (-500, 500))
+            self._add_spin("Y 平移:", "affine_ty", node, (-500, 500))
 
-        interp_combo = QComboBox()
-        interp_combo.addItems(["最近邻", "双线性", "双三次", "Lanczos"])
-        interp_combo.setCurrentText(node.interpolation)
-        interp_combo.setStyleSheet(self._input_style())
-        interp_combo.currentTextChanged.connect(lambda v: setattr(node, "interpolation", v))
-        self._form_layout.addRow("插值方法:", interp_combo)
+        elif algo == "透视变换":
+            self._add_spin("左上 X:", "persp_tl_x", node, (-200, 200))
+            self._add_spin("左上 Y:", "persp_tl_y", node, (-200, 200))
+            self._add_spin("右上 X:", "persp_tr_x", node, (-200, 200))
+            self._add_spin("右上 Y:", "persp_tr_y", node, (-200, 200))
+            self._add_spin("左下 X:", "persp_bl_x", node, (-200, 200))
+            self._add_spin("左下 Y:", "persp_bl_y", node, (-200, 200))
+            self._add_spin("右下 X:", "persp_br_x", node, (-200, 200))
+            self._add_spin("右下 Y:", "persp_br_y", node, (-200, 200))
+
+        elif algo == "图像旋转":
+            self._add_double_spin("旋转角度:", "rotate_angle",
+                                  node, (0.0, 360.0))
+            self._add_double_spin("缩放系数:", "rotate_scale",
+                                  node, (0.1, 5.0), step=0.1)
+
+        elif algo == "图像缩放":
+            self._add_spin("宽度:", "scale_width", node, (1, 4096))
+            self._add_spin("高度:", "scale_height", node, (1, 4096))
+            self._add_check("保持宽高比", "keep_aspect", node)
+            self._add_combo("插值方法:", "interpolation", node,
+                            ["最近邻", "双线性", "双三次", "Lanczos"])
+
+    # ── Morphology ─────────────────────────────────────
+
+    def _add_morphology_params(self, node):
+        self._add_spin("核大小:", "kernel_size", node, (3, 31), step=2)
+        self._add_combo("核形状:", "kernel_shape", node, ["矩形", "椭圆", "十字"])
+        self._add_spin("迭代次数:", "iterations", node, (1, 10))
+
+    # ── Enhancement ────────────────────────────────────
+
+    def _add_enhancement_params(self, node):
+        algo = node.algorithm
+
+        if algo == "直方图均衡化":
+            pass  # 无参数
+        elif algo == "对比度拉伸":
+            self._add_double_spin("低端裁剪 (%):", "clip_low_pct",
+                                  node, (0.0, 49.0), step=0.5)
+            self._add_double_spin("高端裁剪 (%):", "clip_high_pct",
+                                  node, (0.0, 49.0), step=0.5)
+        elif algo == "伽马校正":
+            self._add_double_spin("Gamma 值:", "gamma",
+                                  node, (0.1, 5.0), step=0.1)
+        elif algo == "对数变换":
+            self._add_double_spin("缩放系数 C:", "log_c",
+                                  node, (0.1, 10.0), step=0.1)
+        elif algo == "锐化滤波":
+            self._add_double_spin("锐化强度:", "sharpen_amount",
+                                  node, (0.1, 5.0), step=0.1)
+            self._add_spin("模糊半径:", "sharpen_radius", node, (1, 10))
+
+    # ── Frequency ──────────────────────────────────────
+
+    def _add_frequency_params(self, node):
+        algo = node.algorithm
+
+        if algo == "傅里叶变换":
+            pass  # 仅显示频谱图，无参数
+        elif algo == "高通滤波":
+            self._add_spin("截止频率:", "cutoff", node, (1, 200))
+        elif algo == "低通滤波":
+            self._add_spin("截止频率:", "cutoff", node, (1, 200))
+        elif algo == "带通滤波":
+            self._add_spin("低截止频率:", "low_cutoff", node, (1, 200))
+            self._add_spin("高截止频率:", "high_cutoff", node, (1, 200))
+        elif algo == "同态滤波":
+            self._add_double_spin("低频增益 (γL):", "homo_low_gamma",
+                                  node, (0.1, 2.0), step=0.1)
+            self._add_double_spin("高频增益 (γH):", "homo_high_gamma",
+                                  node, (0.5, 3.0), step=0.1)
+            self._add_spin("截止频率:", "homo_cutoff", node, (1, 200))
+
+    # ── Segmentation ───────────────────────────────────
+
+    def _add_segmentation_params(self, node):
+        algo = node.algorithm
+
+        if algo == "区域生长":
+            self._add_spin("种子 X:", "seed_x", node, (0, 4096))
+            self._add_spin("种子 Y:", "seed_y", node, (0, 4096))
+            self._add_spin("生长阈值:", "grow_threshold", node, (1, 100))
+        elif algo == "分水岭算法":
+            pass  # 自动阈值，无需手动参数
+        elif algo == "K-means聚类":
+            self._add_spin("聚类数 K:", "k", node, (2, 10))
+            self._add_spin("最大迭代:", "kmeans_max_iter", node, (5, 100))
+            self._add_spin("尝试次数:", "kmeans_attempts", node, (1, 10))
+        elif algo == "GrabCut":
+            self._add_spin("迭代次数:", "grabcut_iters", node, (1, 20))
+        elif algo == "阈值分割":
+            self._add_spin("阈值:", "seg_threshold", node, (0, 255))
+
+    # ── ImageOutput ────────────────────────────────────
 
     def _add_output_params(self, node):
         # 图像预览
@@ -453,18 +635,14 @@ class PropertyPanel(QWidget):
         self._form_layout.addRow("", wrapper)
         self._preview_label = preview
 
-        auto_check = QCheckBox("执行后自动显示")
-        auto_check.setChecked(node._auto_show)
-        auto_check.setStyleSheet(
-            f"color: {SIDEBAR_TEXT}; background: transparent; spacing: 6px;"
-        )
-        auto_check.toggled.connect(lambda v: setattr(node, "_auto_show", v))
-        self._form_layout.addRow("", auto_check)
+        self._add_check("执行后自动显示", "_auto_show", node)
 
         save_btn = QPushButton("保存到文件")
         save_btn.setStyleSheet(self._btn_style())
         save_btn.clicked.connect(self._on_output_save)
         self._form_layout.addRow("", save_btn)
+
+    # ── 通用 ───────────────────────────────────────────
 
     def _browse_image(self, node, path_edit: QLineEdit):
         path, _ = QFileDialog.getOpenFileName(
@@ -512,6 +690,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1000, 600)
 
         self.engine = ExecutionEngine()
+        self._runner: Optional[FlowRunner] = None
         self._build_ui()
         self._apply_theme()
 
@@ -706,28 +885,38 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "画布中没有节点，请先添加算子。")
             return
 
-        # 检查是否有输入节点
-        has_input = any(
-            len(n.inputs) == 0 for n in self.engine.nodes
-        )
+        has_input = any(len(n.inputs) == 0 for n in self.engine.nodes)
         if not has_input:
             QMessageBox.warning(self, "警告", "流程中缺少数据源节点（如「图像读取」）。")
             return
 
-        self.status_bar.showMessage("正在执行流程...")
-        QApplication.processEvents()
+        if self._runner is not None and self._runner.isRunning():
+            QMessageBox.information(self, "提示", "流程正在执行中，请稍候...")
+            return
 
-        try:
-            results = self.engine.execute()
-            self.status_bar.showMessage("流程执行完成 ✓")
-            self._update_node_statuses()
-            self.property_panel.refresh_output_preview()
-        except Exception as e:
-            self.status_bar.showMessage(f"执行失败: {e}")
-            QMessageBox.critical(
-                self, "执行错误",
-                f"流程执行过程中发生错误:\n\n{traceback.format_exc()}"
-            )
+        self.status_bar.showMessage("正在执行流程...")
+        self._runner = FlowRunner(self.engine)
+        self._runner.finished.connect(self._on_flow_finished)
+        self._runner.error.connect(self._on_flow_error)
+        self._runner.start()
+
+    def _on_flow_finished(self, results):
+        self._runner = None
+        self.status_bar.showMessage("流程执行完成 ✓")
+        self._update_node_statuses()
+        self.property_panel.refresh_output_preview()
+        # 在主线程中显示输出节点的图像（避免 QThread 中创建 GUI 对象）
+        for node in self.engine.nodes:
+            if hasattr(node, "_auto_show") and node._auto_show and node._last_image is not None:
+                node.show_last_result()
+
+    def _on_flow_error(self, err_msg):
+        self._runner = None
+        self.status_bar.showMessage("执行失败")
+        QMessageBox.critical(
+            self, "执行错误",
+            f"流程执行过程中发生错误:\n\n{err_msg}"
+        )
 
     def _update_node_statuses(self):
         """执行后更新节点外观。"""
@@ -746,16 +935,6 @@ class MainWindow(QMainWindow):
             "<li>点击工具栏的<b>「执行」</b>按钮（或按 F5）运行流程。</li>"
             "<li>使用<b>鼠标中键</b>拖拽平移画布，<b>滚轮</b>缩放画布。</li>"
             "</ol>"
-            "<p><b>可用算子：</b></p>"
-            "<ul>"
-            "<li><b>图像读取</b> — 从文件加载图像，作为数据源</li>"
-            "<li><b>灰度化</b> — 将彩色图像转换为灰度图</li>"
-            "<li><b>高斯模糊</b> — 对图像进行高斯平滑</li>"
-            "<li><b>边缘检测</b> — Canny 边缘提取</li>"
-            "<li><b>阈值二值化</b> — 多种阈值处理方法</li>"
-            "<li><b>图像缩放</b> — 调整图像尺寸</li>"
-            "<li><b>结果输出</b> — 显示结果并可保存到文件</li>"
-            "</ul>"
         )
         QMessageBox.information(self, "使用说明", text)
 
@@ -765,7 +944,6 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("ImageFlow")
 
-    # 设置字体
     font = QFont("Microsoft YaHei", 10)
     app.setFont(font)
 

@@ -116,13 +116,8 @@ class ImageOutputNode(Node):
             raise ValueError("未接收到图像数据")
 
         self._last_image = img
-
-        if self._auto_show:
-            pixmap = _ndarray_to_qpixmap(img)
-            # 传原始图像以支持中文路径保存
-            viewer = ImageViewerDialog(pixmap, raw_image=img)
-            viewer.exec_()
-
+        # 不在此处创建 GUI 对象 —— process() 可能在后台线程中运行，
+        # Qt 禁止在非主线程创建 QWidget/QPixmap。
         return {"图像": img}
 
     def show_last_result(self):
