@@ -211,9 +211,9 @@ class ExecutionEngine:
 #
 # 标准输出格式 (region_input / object_detection 等节点遵循):
 #   {"regions": [
-#       {"id": 1, "type": "矩形", "class": None, "coordinates": {"x1":..., "y1":..., "x2":..., "y2":...}},
-#       {"id": 2, "type": "圆形", "class": None, "coordinates": {"cx":..., "cy":..., "radius":...}},
-#       {"id": 3, "type": "多边形", "class": None, "coordinates": {"points": [[x1,y1],...]}},
+#       {"id": 1, "type": "矩形", "class": None, "ocr": "", "coordinates": {"x1":..., "y1":..., "x2":..., "y2":...}},
+#       {"id": 2, "type": "圆形", "class": None, "ocr": "", "coordinates": {"cx":..., "cy":..., "radius":...}},
+#       {"id": 3, "type": "多边形", "class": None, "ocr": "Hello", "coordinates": {"points": [[x1,y1],...]}},
 #   ]}
 #
 # 消费者节点 (overlay / crop 等) 通过 _extract_regions() 兼容新旧格式。
@@ -227,6 +227,7 @@ def format_regions(regions: list) -> dict:
             "id": i + 1,
             "type": r["type"],
             "class": r.get("class_id") if "class_id" in r else r.get("class"),
+            "ocr": r.get("ocr", ""),
             "coordinates": r["coordinates"],
         }
         out.append(item)

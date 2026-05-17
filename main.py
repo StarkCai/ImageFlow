@@ -573,6 +573,8 @@ class PropertyPanel(QWidget):
             self._add_object_detection_params(node)
         elif cls_name == "ClassificationNode":
             self._add_classification_params(node)
+        elif cls_name == "OcrNode":
+            self._add_ocr_params(node)
         elif cls_name == "RegionOutputNode":
             self._add_region_output_params(node)
         elif cls_name == "ImageOutputNode":
@@ -871,6 +873,97 @@ class PropertyPanel(QWidget):
         self._form_layout.addRow("显示 Top-K:", topk_spin)
 
         self._add_combo("推理设备:", "device", node, ["GPU", "CPU"])
+
+    # ── OCR ──────────────────────────────────────────
+
+    def _add_ocr_params(self, node):
+        # 检测模型
+        det_path_layout = QHBoxLayout()
+        det_edit = QLineEdit()
+        det_edit.setText(node.det_model_path)
+        det_edit.setPlaceholderText("选择检测 ONNX 模型 (留空=仅识别全图)...")
+        det_edit.setStyleSheet(self._input_style())
+        det_edit.textChanged.connect(lambda v: setattr(node, "det_model_path", v))
+        det_path_layout.addWidget(det_edit)
+        det_browse = QPushButton("...")
+        det_browse.setFixedWidth(32)
+        det_browse.setStyleSheet(self._btn_style())
+        det_browse.clicked.connect(lambda: self._browse_onnx(node, det_edit))
+        det_path_layout.addWidget(det_browse)
+        self._form_layout.addRow("检测模型 (可选):", det_path_layout)
+
+        # 识别模型
+        rec_path_layout = QHBoxLayout()
+        rec_edit = QLineEdit()
+        rec_edit.setText(node.rec_model_path)
+        rec_edit.setPlaceholderText("选择识别 ONNX 模型...")
+        rec_edit.setStyleSheet(self._input_style())
+        rec_edit.textChanged.connect(lambda v: setattr(node, "rec_model_path", v))
+        rec_path_layout.addWidget(rec_edit)
+        rec_browse = QPushButton("...")
+        rec_browse.setFixedWidth(32)
+        rec_browse.setStyleSheet(self._btn_style())
+        rec_browse.clicked.connect(lambda: self._browse_onnx(node, rec_edit))
+        rec_path_layout.addWidget(rec_browse)
+        self._form_layout.addRow("识别模型:", rec_path_layout)
+
+        # 字典文件
+        dict_path_layout = QHBoxLayout()
+        dict_edit = QLineEdit()
+        dict_edit.setText(node.dict_path)
+        dict_edit.setPlaceholderText("选择字典文件 (.txt)...")
+        dict_edit.setStyleSheet(self._input_style())
+        dict_edit.textChanged.connect(lambda v: setattr(node, "dict_path", v))
+        dict_path_layout.addWidget(dict_edit)
+        dict_browse = QPushButton("...")
+        dict_browse.setFixedWidth(32)
+        dict_browse.setStyleSheet(self._btn_style())
+        dict_browse.clicked.connect(
+            lambda: self._browse_dict(node, dict_edit)
+        )
+        dict_path_layout.addWidget(dict_browse)
+        self._form_layout.addRow("字典文件:", dict_path_layout)
+
+        # 检测阈值
+        det_thresh = QDoubleSpinBox()
+        det_thresh.setRange(0.05, 1.0)
+        det_thresh.setSingleStep(0.05)
+        det_thresh.setDecimals(2)
+        det_thresh.setValue(node.det_threshold)
+        det_thresh.setStyleSheet(self._input_style())
+        det_thresh.valueChanged.connect(lambda v: setattr(node, "det_threshold", v))
+        self._form_layout.addRow("检测阈值:", det_thresh)
+
+        # 框置信度
+        box_thresh = QDoubleSpinBox()
+        box_thresh.setRange(0.05, 1.0)
+        box_thresh.setSingleStep(0.05)
+        box_thresh.setDecimals(2)
+        box_thresh.setValue(node.det_box_thresh)
+        box_thresh.setStyleSheet(self._input_style())
+        box_thresh.valueChanged.connect(lambda v: setattr(node, "det_box_thresh", v))
+        self._form_layout.addRow("框置信度:", box_thresh)
+
+        # 识别阈值
+        rec_thresh = QDoubleSpinBox()
+        rec_thresh.setRange(0.0, 1.0)
+        rec_thresh.setSingleStep(0.05)
+        rec_thresh.setDecimals(2)
+        rec_thresh.setValue(node.rec_conf_threshold)
+        rec_thresh.setStyleSheet(self._input_style())
+        rec_thresh.valueChanged.connect(lambda v: setattr(node, "rec_conf_threshold", v))
+        self._form_layout.addRow("识别置信度:", rec_thresh)
+
+        self._add_combo("推理设备:", "device", node, ["GPU", "CPU"])
+
+    def _browse_dict(self, node, dict_edit: QLineEdit):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择字典文件", "",
+            "文本文件 (*.txt);;所有文件 (*)"
+        )
+        if path:
+            dict_edit.setText(path)
+            node.dict_path = path
 
     # ── RegionOutput ───────────────────────────────────
 

@@ -17,5 +17,6 @@ from nodes.crop import CropNode
 from nodes.object_detection import ObjectDetectionNode
 from nodes.classification import ClassificationNode
 from nodes.class_mapping import ClassMappingNode
+from nodes.ocr import OcrNode
 from nodes.region_output import RegionOutputNode
 from nodes.image_output import ImageOutputNode
