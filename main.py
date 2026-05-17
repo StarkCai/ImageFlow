@@ -34,7 +34,7 @@ os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
 from node_base import Node, Port, Connection, ExecutionEngine
 from node_registry import NodeRegistry
 from node_canvas import NodeScene, NodeCanvas, NodeItem, WireItem
-from nodes.image_output import _ndarray_to_qpixmap
+from nodes.output.image_output import _ndarray_to_qpixmap
 from project import save_project, load_project, apply_params
 
 # 触发节点注册
@@ -1701,7 +1701,8 @@ class MainWindow(QMainWindow):
     def _on_flow_finished(self, results):
         self._runner = None
         self.status_bar.showMessage("流程执行完成 ✓")
-        self.log_panel.success("流程执行完成")
+        node_count = len(self.engine.nodes)
+        self.log_panel.success(f"算法运行完成，共处理 {node_count} 个节点")
 
         # 输出检测/分类结果到日志
         for node in self.engine.nodes:
