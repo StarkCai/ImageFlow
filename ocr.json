@@ -1,40 +1,48 @@
 {
-  "version": "1.0",
+  "version": "1.1",
   "nodes": [
     {
       "uid": "cf0dd153",
       "type": "ImageInputNode",
-      "x": -432.0,
-      "y": -107.0,
-      "params": {}
+      "x": -693.5760571839095,
+      "y": -528.7339692118501,
+      "params": {
+        "file_path": "",
+        "input_mode": "folder",
+        "folder_path": "D:/claude/image-flow/images",
+        "recursive": false,
+        "queue_size": 5
+      }
     },
     {
       "uid": "9f0e3c1f",
       "type": "RegionOutputNode",
-      "x": 130.0,
-      "y": 31.0,
+      "x": 225.4945146355363,
+      "y": -319.21432379719033,
       "params": {}
     },
     {
       "uid": "0fe17de2",
       "type": "ImageOutputNode",
-      "x": 209.0,
-      "y": -133.0,
-      "params": {}
+      "x": 240.7038491064136,
+      "y": -499.5657962610567,
+      "params": {
+        "save_dir": "D:/claude/image-flow/test_save"
+      }
     },
     {
       "uid": "1ee77dcc",
       "type": "OcrNode",
-      "x": -28.0,
-      "y": -136.0,
+      "x": 26.172912236563718,
+      "y": -284.1275272183546,
       "params": {
-        "det_model_path": "",
+        "det_model_path": "D:/claude/image-flow/models/ocr/det/det.onnx",
         "det_input_size": 640,
         "rec_model_path": "D:/claude/image-flow/models/ocr/rec/rec.onnx",
         "rec_input_height": 32,
         "dict_path": "D:/claude/image-flow/models/ocr/ppocrv5_dict.txt",
         "det_threshold": 0.3,
-        "det_box_thresh": 0.6,
+        "det_box_thresh": 0.49999999999999994,
         "det_unclip_ratio": 1.5,
         "rec_conf_threshold": 0.5,
         "device": "GPU",
@@ -48,42 +56,90 @@
           0,
           255
         ],
-        "text_scale": 0.6,
-        "model_path": "D:/claude/image-flow/models/ocr/rec/rec.onnx"
+        "text_scale": 0.6
       }
     },
     {
-      "uid": "268cd42a",
+      "uid": "006ccb1a",
       "type": "RegionInputNode",
-      "x": -398.0,
-      "y": 18.0,
-      "params": {}
+      "x": -685.7600996620405,
+      "y": -155.2032905036555,
+      "params": {
+        "image_width": 1500,
+        "image_height": 1063
+      }
     },
     {
-      "uid": "46919f9c",
+      "uid": "23cef933",
+      "type": "CoordinateTransformNode",
+      "x": -491.22609578660723,
+      "y": -259.53820036761374,
+      "params": {
+        "target_width": 1920,
+        "target_height": 1080
+      }
+    },
+    {
+      "uid": "373d2b3b",
       "type": "CropNode",
-      "x": -205.0,
-      "y": -130.0,
+      "x": -257.3900354276194,
+      "y": -509.9425664949121,
       "params": {
         "algorithm": "区域裁剪"
       }
     },
     {
-      "uid": "8bcb5e7f",
-      "type": "ImageOutputNode",
-      "x": 117.0,
-      "y": -273.0,
+      "uid": "c0d956e1",
+      "type": "GeometryTransformNode",
+      "x": -486.2507521452571,
+      "y": -389.34891916114316,
+      "params": {
+        "algorithm": "图像缩放",
+        "affine_angle": 0.0,
+        "affine_scale_x": 1.0,
+        "affine_scale_y": 1.0,
+        "affine_tx": 0,
+        "affine_ty": 0,
+        "persp_tl_x": 0,
+        "persp_tl_y": 0,
+        "persp_tr_x": 0,
+        "persp_tr_y": 0,
+        "persp_bl_x": 0,
+        "persp_bl_y": 0,
+        "persp_br_x": 0,
+        "persp_br_y": 0,
+        "rotate_angle": 45.0,
+        "rotate_scale": 1.0,
+        "scale_width": 1920,
+        "scale_height": 1080,
+        "keep_aspect": false,
+        "interpolation": "双线性"
+      }
+    },
+    {
+      "uid": "b9e045eb",
+      "type": "EnhancementNode",
+      "x": -188.02542938909713,
+      "y": -310.05355620267517,
+      "params": {
+        "algorithm": "对比度拉伸",
+        "clip_low_pct": 2.0,
+        "clip_high_pct": 2.0,
+        "gamma": 1.0,
+        "log_c": 1.0,
+        "sharpen_amount": 1.0,
+        "sharpen_radius": 1
+      }
+    },
+    {
+      "uid": "0a8b38d3",
+      "type": "RegionOutputNode",
+      "x": 37.69099368201063,
+      "y": -124.63371815085374,
       "params": {}
     }
   ],
   "connections": [
-    {
-      "uid": "0a5af10a",
-      "src_node": "1ee77dcc",
-      "src_port": "图像",
-      "tgt_node": "0fe17de2",
-      "tgt_port": "图像"
-    },
     {
       "uid": "afdbefbd",
       "src_node": "1ee77dcc",
@@ -92,32 +148,60 @@
       "tgt_port": "区域"
     },
     {
-      "uid": "8fd21bd4",
-      "src_node": "cf0dd153",
-      "src_port": "图像",
-      "tgt_node": "46919f9c",
-      "tgt_port": "图像"
-    },
-    {
-      "uid": "0edb2fef",
-      "src_node": "268cd42a",
+      "uid": "9d18fee2",
+      "src_node": "006ccb1a",
       "src_port": "区域",
-      "tgt_node": "46919f9c",
+      "tgt_node": "23cef933",
       "tgt_port": "区域"
     },
     {
-      "uid": "87fdfec4",
-      "src_node": "46919f9c",
+      "uid": "3e6c4929",
+      "src_node": "23cef933",
+      "src_port": "区域",
+      "tgt_node": "373d2b3b",
+      "tgt_port": "区域"
+    },
+    {
+      "uid": "0253075a",
+      "src_node": "cf0dd153",
+      "src_port": "图像",
+      "tgt_node": "c0d956e1",
+      "tgt_port": "图像"
+    },
+    {
+      "uid": "f934d422",
+      "src_node": "c0d956e1",
+      "src_port": "图像",
+      "tgt_node": "373d2b3b",
+      "tgt_port": "图像"
+    },
+    {
+      "uid": "3c25155b",
+      "src_node": "373d2b3b",
+      "src_port": "图像",
+      "tgt_node": "b9e045eb",
+      "tgt_port": "图像"
+    },
+    {
+      "uid": "62ec2ac6",
+      "src_node": "b9e045eb",
       "src_port": "图像",
       "tgt_node": "1ee77dcc",
       "tgt_port": "图像"
     },
     {
-      "uid": "a3f98e6e",
-      "src_node": "46919f9c",
+      "uid": "773ab9a4",
+      "src_node": "373d2b3b",
       "src_port": "图像",
-      "tgt_node": "8bcb5e7f",
+      "tgt_node": "0fe17de2",
       "tgt_port": "图像"
+    },
+    {
+      "uid": "2ef18858",
+      "src_node": "23cef933",
+      "src_port": "区域",
+      "tgt_node": "0a8b38d3",
+      "tgt_port": "区域"
     }
   ]
 }

@@ -736,6 +736,8 @@ class RegionInputNode(Node):
         self._file_path: str = ""
         self._regions: List[dict] = []
         self._preview_image: Optional[np.ndarray] = None
+        self.image_width: int = 0
+        self.image_height: int = 0
         super().__init__()
 
     def _setup_ports(self):
@@ -758,7 +760,17 @@ class RegionInputNode(Node):
             raise ValueError("未设置图像/视频文件路径")
         if not self._regions:
             raise ValueError("未绘制区域，请在属性面板中点击「绘制区域」")
-        return {"区域": format_regions(self._regions)}
+
+        w, h = self.image_width, self.image_height
+        if w <= 0 or h <= 0:
+            img = self._load_image()
+            if img is not None:
+                h, w = img.shape[:2]
+                self.image_width, self.image_height = w, h
+            else:
+                raise ValueError("无法获取图像尺寸，请重新打开图像文件")
+
+        return {"区域": format_regions(self._regions, width=w, height=h)}
 
     def open_draw_dialog(self):
         if not self._file_path:
@@ -771,6 +783,7 @@ class RegionInputNode(Node):
             return
 
         self._preview_image = img
+        self.image_height, self.image_width = img.shape[:2]
         title = f"区域绘制 — {os.path.basename(self._file_path)}"
         dlg = RegionDrawerDialog(img, title=title,
                                  existing_regions=list(self._regions))

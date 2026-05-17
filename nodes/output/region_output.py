@@ -87,6 +87,8 @@ class RegionOutputNode(Node):
     def __init__(self):
         self._last_regions: Optional[dict] = None
         self._last_json: str = ""
+        self.save_json: bool = False
+        self.save_dir: str = ""
         super().__init__()
 
     def _setup_ports(self):
@@ -132,9 +134,21 @@ class RegionOutputNode(Node):
         )
         if not path:
             return
+        self._write_json(path)
+
+    def save_last_json(self, filepath: str):
+        """批处理自动保存 JSON 到指定文件（支持中文路径），静默忽略错误。"""
+        if self._last_json:
+            try:
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(self._last_json)
+            except Exception:
+                pass
+
+    def _write_json(self, filepath: str):
+        """手动保存 JSON，弹出错误提示。"""
         try:
-            with open(path, "w", encoding="utf-8") as f:
+            with open(filepath, "w", encoding="utf-8") as f:
                 f.write(self._last_json)
-            QMessageBox.information(None, "保存成功", f"JSON 已保存到:\n{path}")
         except Exception as e:
             QMessageBox.warning(None, "保存失败", str(e))

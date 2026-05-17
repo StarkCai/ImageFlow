@@ -127,7 +127,7 @@ class ImageOutputNode(Node):
 
     def __init__(self):
         self._auto_show: bool = False
-        self._save_dir: str = ""
+        self.save_dir: str = ""
         self._last_image: Optional[np.ndarray] = None
         super().__init__()
 

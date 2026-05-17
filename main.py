@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
     QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox, QComboBox,
     QLineEdit, QFileDialog, QMessageBox, QScrollArea, QFrame,
     QToolBar, QAction, QStatusBar, QSizePolicy, QCheckBox, QMenuBar,
-    QMenu, QTextEdit,
+    QMenu, QTextEdit, QRadioButton, QButtonGroup,
 )
 
 # 必须在导入节点之前设置 Qt 平台插件路径
@@ -61,11 +61,14 @@ class FlowRunner(QThread):
     node_started = pyqtSignal(str)
     node_done = pyqtSignal(str)
     node_error = pyqtSignal(str, str)     # node_name, error_msg
+    batch_progress = pyqtSignal(int, int, str)  # current, total, filename
 
     def __init__(self, engine: ExecutionEngine):
         super().__init__()
         self.engine = engine
         self.engine._progress_callback = self._on_node_progress
+        self._progress_counter = 0
+        self._progress_interval = 5  # 每 5 帧发射一次进度信号
 
     def _on_node_progress(self, node_name: str, phase: str):
         if phase == "start":
@@ -74,13 +77,30 @@ class FlowRunner(QThread):
             self.node_done.emit(node_name)
         elif phase.startswith("error:"):
             self.node_error.emit(node_name, phase[7:])
+        elif phase.startswith("start_image_"):
+            self._progress_counter += 1
+            if self._progress_counter % self._progress_interval != 0:
+                return
+            # 格式: "start_image_{idx}_{total}_{filename}"
+            parts = phase.split("_", 3)
+            if len(parts) >= 3:
+                try:
+                    idx = int(parts[1])
+                    total = int(parts[2])
+                    filename = parts[3] if len(parts) > 3 else ""
+                    self.batch_progress.emit(idx, total, filename)
+                except ValueError:
+                    pass
 
     def run(self):
         try:
-            results = self.engine.execute()
+            results = self.engine.execute_batch()
             self.finished.emit(results)
         except Exception:
             self.error.emit(traceback.format_exc())
+
+    def cancel(self):
+        self.engine.cancel()
 
 
 # ── 可拖拽的节点列表 ─────────────────────────────────
@@ -424,6 +444,7 @@ class PropertyPanel(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setStyleSheet(
             f"QScrollArea {{ border: none; background: transparent; }}"
             f"QScrollBar:vertical {{ width: 6px; background: transparent; }}"
@@ -433,6 +454,9 @@ class PropertyPanel(QWidget):
 
         self._form_container = QWidget()
         self._form_container.setStyleSheet("background: transparent;")
+        self._form_container.setSizePolicy(
+            QSizePolicy.Preferred, QSizePolicy.Preferred
+        )
         self._form_layout = QFormLayout(self._form_container)
         self._form_layout.setContentsMargins(4, 4, 4, 4)
         self._form_layout.setSpacing(8)
@@ -519,7 +543,7 @@ class PropertyPanel(QWidget):
             return
         pixmap = _ndarray_to_qpixmap(node._last_image)
         scaled = pixmap.scaled(
-            208, 158, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            180, 136, Qt.KeepAspectRatio, Qt.SmoothTransformation
         )
         preview.setPixmap(scaled)
 
@@ -541,6 +565,8 @@ class PropertyPanel(QWidget):
 
         if cls_name == "ImageInputNode":
             self._add_image_input_params(node)
+        elif cls_name == "VideoInputNode":
+            self._add_video_input_params(node)
         elif cls_name == "SmoothingNode":
             self._add_smoothing_params(node)
         elif cls_name == "EdgeDetectNode":
@@ -579,6 +605,10 @@ class PropertyPanel(QWidget):
             self._add_region_output_params(node)
         elif cls_name == "ImageOutputNode":
             self._add_output_params(node)
+        elif cls_name == "VideoOutputNode":
+            self._add_video_output_params(node)
+        elif cls_name == "CoordinateTransformNode":
+            self._add_coordinate_transform_params(node)
 
     # ── 参数控件辅助方法 ───────────────────────────────
 
@@ -620,21 +650,200 @@ class PropertyPanel(QWidget):
     # ── ImageInput ─────────────────────────────────────
 
     def _add_image_input_params(self, node):
-        path_layout = QHBoxLayout()
-        path_edit = QLineEdit()
-        path_edit.setText(node.file_path)
-        path_edit.setPlaceholderText("选择图像文件...")
-        path_edit.setStyleSheet(self._input_style())
-        path_edit.textChanged.connect(lambda v: setattr(node, "file_path", v))
-        path_layout.addWidget(path_edit)
+        # ── 模式选择 ─────────────────────────────────
+        mode_group = QButtonGroup(self)
+        single_rb = QRadioButton("单文件")
+        folder_rb = QRadioButton("文件夹")
+        mode_group.addButton(single_rb, 0)
+        mode_group.addButton(folder_rb, 1)
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(single_rb)
+        mode_layout.addWidget(folder_rb)
+        mode_layout.addStretch()
+        self._form_layout.addRow("输入模式:", mode_layout)
 
-        browse_btn = QPushButton("...")
-        browse_btn.setFixedWidth(32)
-        browse_btn.setStyleSheet(self._btn_style())
-        browse_btn.clicked.connect(lambda: self._browse_image(node, path_edit))
-        path_layout.addWidget(browse_btn)
+        if node.input_mode == "folder":
+            folder_rb.setChecked(True)
+        else:
+            single_rb.setChecked(True)
 
-        self._form_layout.addRow("文件路径:", path_layout)
+        # ── 单文件路径 ──────────────────────────────
+        self._single_file_widgets: list[QWidget] = []
+
+        single_row = QWidget()
+        single_layout = QHBoxLayout(single_row)
+        single_layout.setContentsMargins(0, 0, 0, 0)
+        single_layout.setSpacing(4)
+        single_edit = QLineEdit()
+        single_edit.setText(node.file_path)
+        single_edit.setPlaceholderText("选择图像文件...")
+        single_edit.setStyleSheet(self._input_style())
+        single_edit.textChanged.connect(lambda v: setattr(node, "file_path", v))
+        single_layout.addWidget(single_edit)
+        single_btn = QPushButton("...")
+        single_btn.setFixedWidth(32)
+        single_btn.setStyleSheet(self._btn_style())
+        single_btn.clicked.connect(lambda: self._browse_image(node, single_edit))
+        single_layout.addWidget(single_btn)
+        file_label = QLabel("文件路径:")
+        self._form_layout.addRow(file_label, single_row)
+        self._single_file_widgets.extend([file_label, single_row])
+
+        # ── 文件夹路径 ──────────────────────────────
+        self._folder_widgets: list[QWidget] = []
+
+        folder_row = QWidget()
+        folder_layout = QHBoxLayout(folder_row)
+        folder_layout.setContentsMargins(0, 0, 0, 0)
+        folder_layout.setSpacing(4)
+        folder_edit = QLineEdit()
+        folder_edit.setText(node.folder_path)
+        folder_edit.setPlaceholderText("选择图像文件夹...")
+        folder_edit.setStyleSheet(self._input_style())
+        folder_edit.textChanged.connect(lambda v: setattr(node, "folder_path", v))
+        folder_layout.addWidget(folder_edit)
+        folder_btn = QPushButton("...")
+        folder_btn.setFixedWidth(32)
+        folder_btn.setStyleSheet(self._btn_style())
+        folder_btn.clicked.connect(lambda: self._browse_folder(node, folder_edit))
+        folder_layout.addWidget(folder_btn)
+        folder_label = QLabel("文件夹路径:")
+        self._form_layout.addRow(folder_label, folder_row)
+        self._folder_widgets.extend([folder_label, folder_row])
+
+        # ── 递归复选框 ──────────────────────────────
+        recursive_check = QCheckBox("包含子文件夹")
+        recursive_check.setChecked(node.recursive)
+        recursive_check.setStyleSheet(
+            f"color: {SIDEBAR_TEXT}; background: transparent; spacing: 6px;"
+        )
+        recursive_check.toggled.connect(lambda v: setattr(node, "recursive", v))
+        self._form_layout.addRow("", recursive_check)
+        self._folder_widgets.append(recursive_check)
+
+        # ── 队列大小 ────────────────────────────────
+        queue_spin = QSpinBox()
+        queue_spin.setRange(1, 50)
+        queue_spin.setValue(node.queue_size)
+        queue_spin.setStyleSheet(self._input_style())
+        queue_spin.valueChanged.connect(lambda v: setattr(node, "queue_size", v))
+        queue_label = QLabel("队列大小:")
+        self._form_layout.addRow(queue_label, queue_spin)
+        self._folder_widgets.extend([queue_label, queue_spin])
+
+        # ── 可见性切换 ──────────────────────────────
+        def _on_mode_toggled():
+            is_folder = folder_rb.isChecked()
+            node.input_mode = "folder" if is_folder else "single"
+            for w in self._single_file_widgets:
+                w.setVisible(not is_folder)
+            for w in self._folder_widgets:
+                w.setVisible(is_folder)
+
+        mode_group.buttonClicked.connect(lambda btn: _on_mode_toggled())
+        _on_mode_toggled()  # 初始状态
+
+    # ── VideoInput ────────────────────────────────────
+
+    def _add_video_input_params(self, node):
+        # ── 模式选择 ─────────────────────────────────
+        mode_group = QButtonGroup(self)
+        single_rb = QRadioButton("单文件")
+        folder_rb = QRadioButton("文件夹")
+        mode_group.addButton(single_rb, 0)
+        mode_group.addButton(folder_rb, 1)
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(single_rb)
+        mode_layout.addWidget(folder_rb)
+        mode_layout.addStretch()
+        self._form_layout.addRow("输入模式:", mode_layout)
+
+        if node.input_mode == "folder":
+            folder_rb.setChecked(True)
+        else:
+            single_rb.setChecked(True)
+
+        # ── 单文件路径 ──────────────────────────────
+        self._video_single_widgets: list[QWidget] = []
+
+        single_row = QWidget()
+        single_layout = QHBoxLayout(single_row)
+        single_layout.setContentsMargins(0, 0, 0, 0)
+        single_layout.setSpacing(4)
+        single_edit = QLineEdit()
+        single_edit.setText(node.file_path)
+        single_edit.setPlaceholderText("选择视频文件...")
+        single_edit.setStyleSheet(self._input_style())
+        single_edit.textChanged.connect(lambda v: setattr(node, "file_path", v))
+        single_layout.addWidget(single_edit)
+        single_btn = QPushButton("...")
+        single_btn.setFixedWidth(32)
+        single_btn.setStyleSheet(self._btn_style())
+        single_btn.clicked.connect(
+            lambda: self._browse_video_file(node, single_edit))
+        single_layout.addWidget(single_btn)
+        file_label = QLabel("文件路径:")
+        self._form_layout.addRow(file_label, single_row)
+        self._video_single_widgets.extend([file_label, single_row])
+
+        # ── 文件夹路径 ──────────────────────────────
+        self._video_folder_widgets: list[QWidget] = []
+
+        folder_row = QWidget()
+        folder_layout = QHBoxLayout(folder_row)
+        folder_layout.setContentsMargins(0, 0, 0, 0)
+        folder_layout.setSpacing(4)
+        folder_edit = QLineEdit()
+        folder_edit.setText(node.folder_path)
+        folder_edit.setPlaceholderText("选择视频文件夹...")
+        folder_edit.setStyleSheet(self._input_style())
+        folder_edit.textChanged.connect(lambda v: setattr(node, "folder_path", v))
+        folder_layout.addWidget(folder_edit)
+        folder_btn = QPushButton("...")
+        folder_btn.setFixedWidth(32)
+        folder_btn.setStyleSheet(self._btn_style())
+        folder_btn.clicked.connect(
+            lambda: self._browse_folder(node, folder_edit))
+        folder_layout.addWidget(folder_btn)
+        folder_label = QLabel("文件夹路径:")
+        self._form_layout.addRow(folder_label, folder_row)
+        self._video_folder_widgets.extend([folder_label, folder_row])
+
+        # 递归
+        recursive_check = QCheckBox("包含子文件夹")
+        recursive_check.setChecked(node.recursive)
+        recursive_check.setStyleSheet(
+            f"color: {SIDEBAR_TEXT}; background: transparent; spacing: 6px;"
+        )
+        recursive_check.toggled.connect(lambda v: setattr(node, "recursive", v))
+        self._form_layout.addRow("", recursive_check)
+        self._video_folder_widgets.append(recursive_check)
+
+        # ── 队列大小与帧跳过（始终可见）────────────────
+        queue_spin = QSpinBox()
+        queue_spin.setRange(1, 50)
+        queue_spin.setValue(node.queue_size)
+        queue_spin.setStyleSheet(self._input_style())
+        queue_spin.valueChanged.connect(lambda v: setattr(node, "queue_size", v))
+        self._form_layout.addRow("队列大小:", queue_spin)
+        skip_spin = QSpinBox()
+        skip_spin.setRange(0, 9999)
+        skip_spin.setValue(node.frame_skip)
+        skip_spin.setStyleSheet(self._input_style())
+        skip_spin.valueChanged.connect(lambda v: setattr(node, "frame_skip", v))
+        self._form_layout.addRow("帧跳过:", skip_spin)
+
+        # ── 可见性切换 ──────────────────────────────
+        def _on_mode_toggled():
+            is_folder = folder_rb.isChecked()
+            node.input_mode = "folder" if is_folder else "single"
+            for w in self._video_single_widgets:
+                w.setVisible(not is_folder)
+            for w in self._video_folder_widgets:
+                w.setVisible(is_folder)
+
+        mode_group.buttonClicked.connect(lambda btn: _on_mode_toggled())
+        _on_mode_toggled()  # 初始状态
 
     # ── RegionInput ───────────────────────────────────
 
@@ -968,7 +1177,59 @@ class PropertyPanel(QWidget):
     # ── RegionOutput ───────────────────────────────────
 
     def _add_region_output_params(self, node):
-        # 摘要标签
+        # ── 批量保存 JSON ────────────────────────────
+        save_json_check = QCheckBox("自动保存JSON")
+        save_json_check.setChecked(node.save_json)
+        save_json_check.setStyleSheet(
+            f"color: {SIDEBAR_TEXT}; background: transparent; spacing: 6px;"
+        )
+        self._form_layout.addRow("", save_json_check)
+
+        # 保存目录行（初始根据 save_json 状态显示/隐藏）
+        save_dir_row = QWidget()
+        save_dir_layout = QHBoxLayout(save_dir_row)
+        save_dir_layout.setContentsMargins(0, 0, 0, 0)
+        save_dir_layout.setSpacing(4)
+        save_dir_edit = QLineEdit()
+        save_dir_edit.setText(node.save_dir)
+        save_dir_edit.setPlaceholderText("选择批量保存目录...")
+        save_dir_edit.setStyleSheet(self._input_style())
+        save_dir_edit.textChanged.connect(lambda v: setattr(node, "save_dir", v))
+        save_dir_layout.addWidget(save_dir_edit)
+        dir_browse_btn = QPushButton("...")
+        dir_browse_btn.setFixedWidth(28)
+        dir_browse_btn.setStyleSheet(self._btn_style())
+        dir_browse_btn.clicked.connect(
+            lambda: self._browse_save_dir(node, save_dir_edit)
+        )
+        save_dir_layout.addWidget(dir_browse_btn)
+        save_dir_row.setVisible(node.save_json)
+        self._form_layout.addRow("", save_dir_row)
+
+        # 路径为空时的提示标签
+        save_dir_hint = QLabel("⚠ 请选择 JSON 保存路径")
+        save_dir_hint.setStyleSheet(
+            f"color: #e0a050; font-size: 10px; background: transparent;"
+        )
+        save_dir_hint.setVisible(False)
+        self._form_layout.addRow("", save_dir_hint)
+
+        # 勾选逻辑：选中时若路径为空则弹出目录选择，取消则隐藏
+        def on_save_json_toggled(checked):
+            node.save_json = checked
+            save_dir_row.setVisible(checked)
+            if checked and not node.save_dir:
+                self._browse_save_dir(node, save_dir_edit)
+                if not node.save_dir:
+                    save_dir_hint.setVisible(True)
+                else:
+                    save_dir_hint.setVisible(False)
+            else:
+                save_dir_hint.setVisible(False)
+
+        save_json_check.toggled.connect(on_save_json_toggled)
+
+        # ── 摘要标签 ─────────────────────────────────
         summary_lbl = QLabel(node.region_summary)
         summary_lbl.setStyleSheet(
             f"color: {SIDEBAR_TEXT}; font-size: 12px; "
@@ -1221,9 +1482,35 @@ class PropertyPanel(QWidget):
     # ── ImageOutput ────────────────────────────────────
 
     def _add_output_params(self, node):
+        # ── 批量保存目录 ────────────────────────────
+        save_dir_label = QLabel("保存到:")
+        save_dir_label.setStyleSheet(
+            f"color: {SIDEBAR_TEXT}; font-size: 11px; background: transparent;"
+        )
+        self._form_layout.addRow("", save_dir_label)
+
+        save_dir_row = QWidget()
+        save_dir_layout = QHBoxLayout(save_dir_row)
+        save_dir_layout.setContentsMargins(0, 0, 0, 0)
+        save_dir_layout.setSpacing(4)
+        save_dir_edit = QLineEdit()
+        save_dir_edit.setText(node.save_dir)
+        save_dir_edit.setPlaceholderText("选择批量保存目录...")
+        save_dir_edit.setStyleSheet(self._input_style())
+        save_dir_edit.textChanged.connect(lambda v: setattr(node, "save_dir", v))
+        save_dir_layout.addWidget(save_dir_edit)
+        dir_browse_btn = QPushButton("...")
+        dir_browse_btn.setFixedWidth(28)
+        dir_browse_btn.setStyleSheet(self._btn_style())
+        dir_browse_btn.clicked.connect(
+            lambda: self._browse_save_dir(node, save_dir_edit)
+        )
+        save_dir_layout.addWidget(dir_browse_btn)
+        self._form_layout.addRow("", save_dir_row)
+
         # 图像预览
         preview = QLabel()
-        preview.setFixedSize(210, 160)
+        preview.setFixedSize(184, 140)
         preview.setAlignment(Qt.AlignCenter)
         preview.setStyleSheet(
             "background: #1a1a20; border: 1px solid #444; "
@@ -1232,17 +1519,12 @@ class PropertyPanel(QWidget):
         if node._last_image is not None:
             pixmap = _ndarray_to_qpixmap(node._last_image)
             scaled = pixmap.scaled(
-                208, 158, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                180, 136, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
             preview.setPixmap(scaled)
         else:
-            preview.setText("暂无预览图像\n请先执行流程")
-        wrapper = QHBoxLayout()
-        wrapper.setContentsMargins(0, 0, 0, 0)
-        wrapper.addStretch()
-        wrapper.addWidget(preview)
-        wrapper.addStretch()
-        self._form_layout.addRow("", wrapper)
+            preview.setText("暂无预览\n请先执行流程")
+        self._form_layout.addRow("", preview)
         self._preview_label = preview
 
         self._add_check("执行后自动显示", "_auto_show", node)
@@ -1257,6 +1539,110 @@ class PropertyPanel(QWidget):
         save_btn.clicked.connect(self._on_output_save)
         self._form_layout.addRow("", save_btn)
 
+    # ── CoordinateTransform ─────────────────────────────
+
+    def _add_coordinate_transform_params(self, node):
+        self._add_spin("目标宽度:", "target_width", node, (1, 65536))
+        self._add_spin("目标高度:", "target_height", node, (1, 65536))
+
+    # ── VideoOutput ─────────────────────────────────────
+
+    def _add_video_output_params(self, node):
+        # ── 输出模式选择 ─────────────────────────────
+        mode_group = QButtonGroup(self)
+        video_rb = QRadioButton("视频")
+        image_rb = QRadioButton("图片")
+        mode_group.addButton(video_rb, 0)
+        mode_group.addButton(image_rb, 1)
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(video_rb)
+        mode_layout.addWidget(image_rb)
+        mode_layout.addStretch()
+        self._form_layout.addRow("输出模式:", mode_layout)
+
+        if node.output_mode == "image":
+            image_rb.setChecked(True)
+        else:
+            video_rb.setChecked(True)
+
+        # ── 保存目录（始终可见）──────────────────────
+        save_dir_row = QWidget()
+        save_dir_layout = QHBoxLayout(save_dir_row)
+        save_dir_layout.setContentsMargins(0, 0, 0, 0)
+        save_dir_layout.setSpacing(4)
+        save_dir_edit = QLineEdit()
+        save_dir_edit.setText(node.save_dir)
+        save_dir_edit.setPlaceholderText("选择保存目录...")
+        save_dir_edit.setStyleSheet(self._input_style())
+        save_dir_edit.textChanged.connect(lambda v: setattr(node, "save_dir", v))
+        save_dir_layout.addWidget(save_dir_edit)
+        dir_browse_btn = QPushButton("...")
+        dir_browse_btn.setFixedWidth(28)
+        dir_browse_btn.setStyleSheet(self._btn_style())
+        dir_browse_btn.clicked.connect(
+            lambda: self._browse_save_dir(node, save_dir_edit)
+        )
+        save_dir_layout.addWidget(dir_browse_btn)
+        save_dir_label = QLabel("保存目录:")
+        self._form_layout.addRow(save_dir_label, save_dir_row)
+
+        # ── 视频模式控件 ─────────────────────────────
+        self._video_mode_widgets: list[QWidget] = []
+
+        video_fmt_combo = QComboBox()
+        video_fmt_combo.addItems(["mp4", "avi", "mov"])
+        video_fmt_combo.setCurrentText(node.video_format)
+        video_fmt_combo.setStyleSheet(self._input_style())
+        video_fmt_combo.currentTextChanged.connect(
+            lambda v: setattr(node, "video_format", v))
+        video_fmt_label = QLabel("视频格式:")
+        self._form_layout.addRow(video_fmt_label, video_fmt_combo)
+        self._video_mode_widgets.extend([video_fmt_label, video_fmt_combo])
+
+        fps_label = QLabel("帧率 (FPS):")
+        fps_spin = QSpinBox()
+        fps_spin.setRange(1, 120)
+        fps_spin.setValue(node.fps)
+        fps_spin.setStyleSheet(self._input_style())
+        fps_spin.valueChanged.connect(lambda v: setattr(node, "fps", v))
+        self._form_layout.addRow(fps_label, fps_spin)
+        self._video_mode_widgets.extend([fps_label, fps_spin])
+
+        # ── 图片模式控件 ─────────────────────────────
+        self._image_mode_widgets: list[QWidget] = []
+
+        img_fmt_combo = QComboBox()
+        img_fmt_combo.addItems(["jpg", "png"])
+        img_fmt_combo.setCurrentText(node.image_format)
+        img_fmt_combo.setStyleSheet(self._input_style())
+        img_fmt_combo.currentTextChanged.connect(
+            lambda v: setattr(node, "image_format", v))
+        img_fmt_label = QLabel("图像格式:")
+        self._form_layout.addRow(img_fmt_label, img_fmt_combo)
+        self._image_mode_widgets.extend([img_fmt_label, img_fmt_combo])
+
+        # ── 保存结果复选框 ─────────────────────────────
+        auto_save_check = QCheckBox("保存结果")
+        auto_save_check.setChecked(node.auto_save)
+        auto_save_check.setStyleSheet(
+            f"color: {SIDEBAR_TEXT}; background: transparent; spacing: 6px;"
+        )
+        auto_save_check.toggled.connect(lambda v: setattr(node, "auto_save", v))
+        self._form_layout.addRow("", auto_save_check)
+
+        # ── 可见性切换 ──────────────────────────────
+        def _on_output_mode_toggled():
+            is_video = video_rb.isChecked()
+            node.output_mode = "video" if is_video else "image"
+            for w in self._video_mode_widgets:
+                w.setVisible(is_video)
+            for w in self._image_mode_widgets:
+                w.setVisible(not is_video)
+
+        mode_group.buttonClicked.connect(
+            lambda btn: _on_output_mode_toggled())
+        _on_output_mode_toggled()  # 初始状态
+
     # ── 通用 ───────────────────────────────────────────
 
     def _browse_image(self, node, path_edit: QLineEdit):
@@ -1267,6 +1653,27 @@ class PropertyPanel(QWidget):
         if path:
             path_edit.setText(path)
             node.file_path = path
+
+    def _browse_video_file(self, node, path_edit: QLineEdit):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择视频文件", "",
+            "视频文件 (*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.webm);;所有文件 (*)"
+        )
+        if path:
+            path_edit.setText(path)
+            node.file_path = path
+
+    def _browse_folder(self, node, path_edit: QLineEdit):
+        path = QFileDialog.getExistingDirectory(self, "选择图像文件夹")
+        if path:
+            path_edit.setText(path)
+            node.folder_path = path
+
+    def _browse_save_dir(self, node, path_edit: QLineEdit):
+        path = QFileDialog.getExistingDirectory(self, "选择批量保存目录")
+        if path:
+            path_edit.setText(path)
+            node.save_dir = path
 
     def _browse_region_file(self, node, path_edit: QLineEdit):
         path, _ = QFileDialog.getOpenFileName(
@@ -1326,6 +1733,7 @@ class MainWindow(QMainWindow):
 
         self.engine = ExecutionEngine()
         self._runner: Optional[FlowRunner] = None
+        self._stop_action = None
         self._current_project_path: str = ""
         self._build_ui()
         self._apply_theme()
@@ -1435,6 +1843,12 @@ class MainWindow(QMainWindow):
         run_action.setToolTip("执行当前节点流程 (F5)")
         run_action.triggered.connect(self._execute_flow)
         toolbar.addAction(run_action)
+
+        self._stop_action = QAction("■ 中止", self)
+        self._stop_action.setToolTip("中止正在执行的流程")
+        self._stop_action.setEnabled(False)
+        self._stop_action.triggered.connect(self._cancel_flow)
+        toolbar.addAction(self._stop_action)
 
         toolbar.addSeparator()
 
@@ -1668,6 +2082,14 @@ class MainWindow(QMainWindow):
             self.property_panel.set_node(None)
 
     # ── 流程执行 ──────────────────────────────────────
+    def _cancel_flow(self):
+        """中止正在执行的流程。"""
+        if self._runner is not None and self._runner.isRunning():
+            self._runner.cancel()
+            self.log_panel.warn("正在中止流程 — 等待当前帧处理完成...")
+            self.status_bar.showMessage("正在中止流程...")
+            self._stop_action.setEnabled(False)
+
     def _execute_flow(self):
         if not self.engine.nodes:
             QMessageBox.information(self, "提示", "画布中没有节点，请先添加算子。")
@@ -1684,6 +2106,16 @@ class MainWindow(QMainWindow):
 
         self.status_bar.showMessage("正在执行流程...")
         self.log_panel.info(f"开始执行流程 — {len(self.engine.nodes)} 个节点")
+
+        self._stop_action.setEnabled(True)
+
+        # 断开之前的 batch_progress 信号（如果存在）
+        if self._runner is not None:
+            try:
+                self._runner.batch_progress.disconnect()
+            except TypeError:
+                pass
+
         self._runner = FlowRunner(self.engine)
         self._runner.finished.connect(self._on_flow_finished)
         self._runner.error.connect(self._on_flow_error)
@@ -1696,10 +2128,48 @@ class MainWindow(QMainWindow):
         self._runner.node_error.connect(
             lambda name, msg: self.log_panel.error(f"节点错误 [{name}]: {msg}")
         )
+        self._runner.batch_progress.connect(self._on_batch_progress)
         self._runner.start()
+
+    def _on_batch_progress(self, current: int, total: int, filename: str):
+        self.status_bar.showMessage(
+            f"批处理中... [{current}/{total}] {filename}"
+        )
+        self.log_panel.info(f"  [{current}/{total}] 处理: {filename}")
 
     def _on_flow_finished(self, results):
         self._runner = None
+        self._stop_action.setEnabled(False)
+
+        # ── 批处理结果 ──────────────────────────────
+        if isinstance(results, dict) and results.get("mode") == "batch":
+            total = results.get("total", 0)
+            completed = results.get("completed", 0)
+            cancelled = self.engine._cancelled
+            if cancelled:
+                self.status_bar.showMessage(
+                    f"流程已中止 — 共处理 {completed} 帧"
+                )
+                self.log_panel.warn(f"流程已中止，共处理 {completed} 帧")
+            else:
+                self.status_bar.showMessage(
+                    f"批处理完成: {completed}/{total} 帧 ✓"
+                )
+                self.log_panel.success(f"算法运行完成，批处理 {completed}/{total} 帧")
+
+            # 报告文件级错误
+            errors = results.get("errors", [])
+            if errors:
+                self.log_panel.warn(f"共 {len(errors)} 个文件读取失败:")
+                for idx, filepath, msg in errors:
+                    self.log_panel.warn(f"  [{os.path.basename(filepath)}] {msg}")
+
+            self._update_node_statuses()
+            self.property_panel.refresh_output_preview()
+            self.property_panel._refresh_region_output_from_nodes(self.engine.nodes)
+            return
+
+        # ── 单次执行结果 ────────────────────────────
         self.status_bar.showMessage("流程执行完成 ✓")
         node_count = len(self.engine.nodes)
         self.log_panel.success(f"算法运行完成，共处理 {node_count} 个节点")
@@ -1726,6 +2196,7 @@ class MainWindow(QMainWindow):
 
     def _on_flow_error(self, err_msg):
         self._runner = None
+        self._stop_action.setEnabled(False)
         self.status_bar.showMessage("执行失败")
         self.log_panel.error(f"流程执行失败:\n{err_msg}")
         QMessageBox.critical(

@@ -230,7 +230,7 @@ class OcrNode(Node):
             }
             for r in results
         ]
-        return {"图像": result_rgb, "区域": format_regions(regions_list)}
+        return {"图像": result_rgb, "区域": format_regions(regions_list, width=orig_w, height=orig_h)}
 
     # ── 文本检测 ──────────────────────────────────────
 

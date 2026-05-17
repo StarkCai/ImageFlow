@@ -154,7 +154,7 @@ class ObjectDetectionNode(Node):
 
         # 转为标准区域格式
         regions_list = self._detections_to_regions(detections, class_mapping)
-        regions = format_regions(regions_list)
+        regions = format_regions(regions_list, width=orig_w, height=orig_h)
 
         # 生成结果摘要供日志
         self._result_summary = (

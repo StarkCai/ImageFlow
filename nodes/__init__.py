@@ -1,6 +1,7 @@
 """节点包初始化，导入所有算子以触发注册。"""
 
 from nodes.input.image_input import ImageInputNode
+from nodes.input.video_input import VideoInputNode
 from nodes.input.region_input import RegionInputNode
 from nodes.input.class_mapping import ClassMappingNode
 from nodes.image_processing.smoothing import SmoothingNode
@@ -18,5 +19,7 @@ from nodes.overlay.crop import CropNode
 from nodes.deep_learning.object_detection import ObjectDetectionNode
 from nodes.deep_learning.classification import ClassificationNode
 from nodes.deep_learning.ocr import OcrNode
+from nodes.logic.coordinate_transform import CoordinateTransformNode
 from nodes.output.region_output import RegionOutputNode
 from nodes.output.image_output import ImageOutputNode
+from nodes.output.video_output import VideoOutputNode

@@ -14,7 +14,7 @@ _SKIP_ATTRS = {
     "_last_image", "_mapping", "_error_msg",
 }
 
-PROJECT_VERSION = "1.0"
+PROJECT_VERSION = "1.1"
 
 
 def _node_params(node: Node) -> dict:
