@@ -1,6 +1,8 @@
 """节点基础框架：端口、节点、连线的抽象基类。"""
 
 from __future__ import annotations
+import threading
+import time as _time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable, Optional
@@ -104,6 +106,12 @@ class ExecutionEngine:
         self.connections: list[Connection] = []
         self._progress_callback: Optional[Callable[[str, str], None]] = None
         self._cancelled: bool = False
+        # ── FPS 限速 & 帧数截断 ──
+        self.fps_cap: float = 0.0     # 0 = 不限速
+        self.max_frames: int = 0      # 0 = 不截断
+        self._paused: bool = False
+        self._resume_event = threading.Event()
+        self._resume_event.set()
 
     def add_node(self, node: Node):
         self.nodes.append(node)
@@ -128,6 +136,29 @@ class ExecutionEngine:
             if c.output_port is out_port and c.input_port is in_port:
                 return c
         return None
+
+    # ── 限速 & 截断 ────────────────────────────────────
+
+    def _rate_limit(self, iteration_start: float):
+        """根据 fps_cap 休眠以维持目标帧率。"""
+        if self.fps_cap <= 0:
+            return
+        elapsed = _time.perf_counter() - iteration_start
+        target = 1.0 / self.fps_cap
+        if elapsed < target:
+            _time.sleep(target - elapsed)
+
+    def pause(self):
+        """暂停批处理（在当前帧完成后挂起）。"""
+        self._paused = True
+        self._resume_event.clear()
+
+    def resume(self):
+        """恢复暂停的批处理。"""
+        self._paused = False
+        self._resume_event.set()
+
+    # ── 拓扑排序 ────────────────────────────────────────
 
     def _topological_sort(self) -> list[Node]:
         """返回拓扑排序后的节点列表，源节点在前。"""
@@ -319,6 +350,14 @@ class ExecutionEngine:
 
         completed = 0
         while not self._cancelled:
+            # ── 暂停等待 ──────────────────────────
+            if self._paused:
+                self._resume_event.wait()
+                if self._cancelled:
+                    break
+
+            iter_start = _time.perf_counter()
+
             item = source_node.next_batch_item()
             if item is None:
                 break
@@ -370,6 +409,18 @@ class ExecutionEngine:
             if cb:
                 cb("批次", f"done_image_{completed}_{total}")
 
+            # ── 最大帧数截断 ──────────────────────
+            if self.max_frames > 0 and completed >= self.max_frames:
+                self.pause()
+                if cb:
+                    cb("批次", "max_frames_reached")
+                self._resume_event.wait()
+                if self._cancelled:
+                    break
+
+            # ── 帧率限速 ──────────────────────────
+            self._rate_limit(iter_start)
+
         batch_errors = source_node.batch_errors
         source_node.cleanup_batch()
 
@@ -397,9 +448,15 @@ class ExecutionEngine:
     def cancel(self):
         """取消正在进行的批处理。"""
         self._cancelled = True
+        self._resume_event.set()  # 唤醒可能被 max_frames 暂停的循环
         for node in self.nodes:
             if hasattr(node, "cancel_batch"):
                 node.cancel_batch()
+
+
+# ── 共享状态 ─────────────────────────────────────────
+# 深度学习节点的 CUDA 状态是否已记录（仅打印一次）
+_cuda_status_logged = False
 
 
 # ── 区域标准格式工具 ──────────────────────────────────

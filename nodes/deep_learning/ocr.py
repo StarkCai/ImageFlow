@@ -200,6 +200,15 @@ class OcrNode(Node):
 
         # ── 阶段 2：文本识别 ──
         rec_session = self._get_session(self.rec_model_path)
+
+        # ── CUDA 状态检查（全局仅一次）────────────
+        import node_base as _nb
+        if not _nb._cuda_status_logged:
+            providers = rec_session.get_providers()
+            _nb._cuda_status_logged = True
+            using_cuda = "CUDAExecutionProvider" in providers
+            self._cuda_log_msg = "[CUDA 加速已启用]" if using_cuda else "[CUDA 不可用，使用 CPU 推理]"
+            print(f"[Image Flow] {self._cuda_log_msg}")
         # 从模型输入形状自动检测识别高度（默认 fallback 32）
         rec_height = self._detect_rec_height(rec_session)
         results = self._recognize_text(img_bgr, det_boxes, rec_session, chars, rec_height)

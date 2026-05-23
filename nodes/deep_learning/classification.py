@@ -100,6 +100,16 @@ class ClassificationNode(Node):
             class_mapping = raw_mapping.get("mapping", {})
 
         session = self._get_session()
+
+        # ── CUDA 状态检查（全局仅一次）────────────
+        import node_base as _nb
+        if not _nb._cuda_status_logged:
+            providers = session.get_providers()
+            _nb._cuda_status_logged = True
+            using_cuda = "CUDAExecutionProvider" in providers
+            self._cuda_log_msg = "[CUDA 加速已启用]" if using_cuda else "[CUDA 不可用，使用 CPU 推理]"
+            print(f"[Image Flow] {self._cuda_log_msg}")
+
         img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
 
         # 预处理：缩放到模型输入尺寸

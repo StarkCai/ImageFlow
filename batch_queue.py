@@ -3,6 +3,7 @@
 from __future__ import annotations
 import queue
 import threading
+from concurrent.futures import ThreadPoolExecutor, Future
 from dataclasses import dataclass
 from typing import Optional
 
@@ -80,3 +81,28 @@ class ImageQueue:
     def errors(self) -> list[tuple[int, str, str]]:
         with self._lock:
             return list(self._errors)
+
+
+class ThreadPoolManager:
+    """共享线程池，统一管理批处理生产者线程。最多 5 个工作线程。"""
+
+    _instance: Optional["ThreadPoolManager"] = None
+
+    def __new__(cls) -> "ThreadPoolManager":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        if not hasattr(self, "_executor"):
+            self._executor = ThreadPoolExecutor(
+                max_workers=5, thread_name_prefix="batch-prod"
+            )
+
+    def submit(self, fn, *args, **kwargs) -> Future:
+        return self._executor.submit(fn, *args, **kwargs)
+
+    def shutdown(self, wait: bool = True):
+        if getattr(self, "_executor", None):
+            self._executor.shutdown(wait=wait)
+            self._executor = None

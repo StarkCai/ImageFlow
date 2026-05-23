@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 import os
-import threading
 from typing import Optional
 
 import cv2
@@ -10,7 +9,7 @@ import numpy as np
 
 from node_base import Node
 from node_registry import register_node
-from batch_queue import BatchItem, ImageQueue
+from batch_queue import BatchItem, ImageQueue, ThreadPoolManager
 
 _VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm")
 
@@ -35,6 +34,7 @@ class VideoInputNode(Node):
         self._current_batch_filename: str = ""
         self._current_batch_index: int = -1
         self._current_video_name: str = ""
+        self._producer_future = None
 
         super().__init__()
 
@@ -93,12 +93,12 @@ class VideoInputNode(Node):
         self._batch_queue = ImageQueue(maxsize=self.queue_size)
         self._batch_queue.total = total_frames
 
-        t = threading.Thread(target=self._producer_loop, daemon=True)
-        t.start()
+        self._producer_future = ThreadPoolManager().submit(self._producer_loop)
         return total_frames
 
     def _producer_loop(self):
         """生产者线程：逐一打开视频文件，按帧跳过策略读取帧并放入队列。"""
+        step = self.frame_skip + 1
         global_idx = 0
         for vid_idx, filepath in enumerate(self._batch_files):
             if self._batch_queue.is_done:
@@ -115,29 +115,35 @@ class VideoInputNode(Node):
                 continue
 
             try:
-                frame_idx = 0   # 原始帧序号
-                kept_count = 0  # 保留下来的帧序号
+                kept_count = 0
+                target = 0  # 目标帧位置
 
                 while not self._batch_queue.is_done:
+                    # 跳到目标帧（避免逐帧解码丢弃）
+                    if step > 1:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, target)
+                        # 回退检查：部分编码器不支持精确定位
+                        actual = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                        if actual < target:
+                            for _ in range(target - actual):
+                                cap.read()
+
                     ret, frame = cap.read()
                     if not ret:
                         break
 
-                    # 应用帧跳过：每 (frame_skip+1) 帧保留一帧
-                    if frame_idx % (self.frame_skip + 1) == 0:
-                        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        filename = f"{video_name}_frame_{kept_count:06d}.jpg"
-                        item = BatchItem(
-                            image=img_rgb,
-                            filename=filename,
-                            filepath=filepath,
-                            index=global_idx,
-                        )
-                        self._batch_queue.put(item)
-                        kept_count += 1
-                        global_idx += 1
-
-                    frame_idx += 1
+                    img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    filename = f"{video_name}_frame_{kept_count:06d}.jpg"
+                    item = BatchItem(
+                        image=img_rgb,
+                        filename=filename,
+                        filepath=filepath,
+                        index=global_idx,
+                    )
+                    self._batch_queue.put(item)
+                    kept_count += 1
+                    global_idx += 1
+                    target += step
 
             except Exception as e:
                 self._batch_queue.add_error(vid_idx, filepath, str(e))
@@ -161,10 +167,13 @@ class VideoInputNode(Node):
         """取消批处理。"""
         if self._batch_queue is not None:
             self._batch_queue.cancel()
+        if self._producer_future is not None:
+            self._producer_future.cancel()
 
     def cleanup_batch(self):
         """清理批处理状态。"""
         self._batch_queue = None
+        self._producer_future = None
         self._batch_files.clear()
         self._current_batch_filename = ""
         self._current_batch_index = -1
@@ -198,13 +207,9 @@ class VideoInputNode(Node):
             raise FileNotFoundError(f"无法打开视频: {self.file_path}")
 
         try:
-            # 跳过前 frame_skip 帧，读取下一帧
-            skip_count = self.frame_skip
-            while skip_count > 0:
-                ret, _ = cap.read()
-                if not ret:
-                    break
-                skip_count -= 1
+            # 跳到目标帧（避免逐帧解码浪费 CPU）
+            if self.frame_skip > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_skip)
 
             ret, frame = cap.read()
             if not ret:

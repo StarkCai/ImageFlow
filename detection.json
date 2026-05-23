@@ -4,25 +4,25 @@
     {
       "uid": "84833edc",
       "type": "VideoInputNode",
-      "x": -326.0,
-      "y": -212.0,
+      "x": -231.91488137052042,
+      "y": -332.80631542772363,
       "params": {
         "file_path": "D:/claude/image-flow/videos/test1.mp4",
         "input_mode": "single",
         "folder_path": "D:/claude/image-flow/videos",
         "recursive": false,
         "frame_skip": 0,
-        "queue_size": 15
+        "queue_size": 10
       }
     },
     {
       "uid": "ab8d607d",
       "type": "VideoOutputNode",
-      "x": 297.0,
-      "y": -279.0,
+      "x": 260.1061274597815,
+      "y": -263.21636203677105,
       "params": {
-        "output_mode": "image",
-        "video_format": "mp4",
+        "output_mode": "video",
+        "video_format": "avi",
         "image_format": "jpg",
         "save_dir": "D:/claude/image-flow/test_save",
         "fps": 25,
@@ -30,88 +30,53 @@
       }
     },
     {
-      "uid": "17f1ab61",
+      "uid": "69002ca5",
       "type": "ObjectDetectionNode",
-      "x": 113.0,
-      "y": -106.0,
+      "x": 26.848467573972982,
+      "y": -269.7631741956334,
       "params": {
-        "model_path": "D:/claude/image-flow/models/detection/yolov8s.onnx",
+        "model_path": "D:/claude/image-flow/models/detection/yolov8n.onnx",
         "input_width": 640,
         "input_height": 640,
         "conf_threshold": 0.5,
         "iou_threshold": 0.45,
         "num_classes": 80,
-        "device": "GPU",
+        "device": "CPU",
         "box_type": "矩形",
         "box_thickness": 2
       }
     },
     {
-      "uid": "0902e323",
+      "uid": "bb93750f",
       "type": "ClassMappingNode",
-      "x": -181.0,
-      "y": -37.0,
+      "x": -303.0009378029839,
+      "y": -213.42773785931658,
       "params": {
         "json_path": "D:/claude/image-flow/models/detection/coco.json"
-      }
-    },
-    {
-      "uid": "f6ade87a",
-      "type": "GeometryTransformNode",
-      "x": -118.0,
-      "y": -236.0,
-      "params": {
-        "algorithm": "图像缩放",
-        "affine_angle": 0.0,
-        "affine_scale_x": 1.0,
-        "affine_scale_y": 1.0,
-        "affine_tx": 0,
-        "affine_ty": 0,
-        "persp_tl_x": 0,
-        "persp_tl_y": 0,
-        "persp_tr_x": 0,
-        "persp_tr_y": 0,
-        "persp_bl_x": 0,
-        "persp_bl_y": 0,
-        "persp_br_x": 0,
-        "persp_br_y": 0,
-        "rotate_angle": 45.0,
-        "rotate_scale": 1.0,
-        "scale_width": 640,
-        "scale_height": 640,
-        "keep_aspect": false,
-        "interpolation": "双线性"
       }
     }
   ],
   "connections": [
     {
-      "uid": "53463dfa",
-      "src_node": "0902e323",
-      "src_port": "类别映射",
-      "tgt_node": "17f1ab61",
-      "tgt_port": "类别映射"
+      "uid": "f41cc327",
+      "src_node": "84833edc",
+      "src_port": "图像",
+      "tgt_node": "69002ca5",
+      "tgt_port": "图像"
     },
     {
-      "uid": "13ce7129",
-      "src_node": "17f1ab61",
+      "uid": "17cf23db",
+      "src_node": "69002ca5",
       "src_port": "图像",
       "tgt_node": "ab8d607d",
       "tgt_port": "图像"
     },
     {
-      "uid": "e0ebe97b",
-      "src_node": "84833edc",
-      "src_port": "图像",
-      "tgt_node": "f6ade87a",
-      "tgt_port": "图像"
-    },
-    {
-      "uid": "95a68a35",
-      "src_node": "f6ade87a",
-      "src_port": "图像",
-      "tgt_node": "17f1ab61",
-      "tgt_port": "图像"
+      "uid": "b87bfaf8",
+      "src_node": "bb93750f",
+      "src_port": "类别映射",
+      "tgt_node": "69002ca5",
+      "tgt_port": "类别映射"
     }
   ]
 }

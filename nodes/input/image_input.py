@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 import os
-import threading
 from typing import Optional
 
 import cv2
@@ -10,7 +9,7 @@ import numpy as np
 
 from node_base import Node
 from node_registry import register_node
-from batch_queue import BatchItem, ImageQueue
+from batch_queue import BatchItem, ImageQueue, ThreadPoolManager
 
 _VALID_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".webp")
 
@@ -42,6 +41,7 @@ class ImageInputNode(Node):
         self._batch_files: list[str] = []
         self._current_batch_filename: str = ""
         self._current_batch_index: int = -1
+        self._producer_future = None
 
         super().__init__()
 
@@ -85,8 +85,7 @@ class ImageInputNode(Node):
         self._batch_queue = ImageQueue(maxsize=self.queue_size)
         self._batch_queue.total = len(self._batch_files)
 
-        t = threading.Thread(target=self._producer_loop, daemon=True)
-        t.start()
+        self._producer_future = ThreadPoolManager().submit(self._producer_loop)
         return len(self._batch_files)
 
     def _producer_loop(self):
@@ -132,10 +131,13 @@ class ImageInputNode(Node):
         """取消批处理。"""
         if self._batch_queue is not None:
             self._batch_queue.cancel()
+        if self._producer_future is not None:
+            self._producer_future.cancel()
 
     def cleanup_batch(self):
         """清理批处理状态。"""
         self._batch_queue = None
+        self._producer_future = None
         self._batch_files.clear()
         self._current_batch_filename = ""
         self._current_batch_index = -1

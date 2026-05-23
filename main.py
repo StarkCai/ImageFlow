@@ -62,22 +62,32 @@ class FlowRunner(QThread):
     node_done = pyqtSignal(str)
     node_error = pyqtSignal(str, str)     # node_name, error_msg
     batch_progress = pyqtSignal(int, int, str)  # current, total, filename
+    max_frames_reached = pyqtSignal()     # 达到最大帧数上限
 
-    def __init__(self, engine: ExecutionEngine):
+    def __init__(self, engine: ExecutionEngine, fps_cap: float = 0.0,
+                 max_frames: int = 0):
         super().__init__()
         self.engine = engine
+        self.engine.fps_cap = fps_cap
+        self.engine.max_frames = max_frames
         self.engine._progress_callback = self._on_node_progress
         self._progress_counter = 0
         self._progress_interval = 5  # 每 5 帧发射一次进度信号
+        self._in_batch = False
 
     def _on_node_progress(self, node_name: str, phase: str):
-        if phase == "start":
-            self.node_started.emit(node_name)
-        elif phase == "done":
-            self.node_done.emit(node_name)
-        elif phase.startswith("error:"):
-            self.node_error.emit(node_name, phase[7:])
-        elif phase.startswith("start_image_"):
+        # ── 批处理生命周期边界 ──
+        if phase.startswith("start_batch_"):
+            self._in_batch = True
+            return
+
+        if phase == "end_batch":
+            self._in_batch = False
+            return
+
+        # ── 帧级进度（批处理模式）──
+        if phase.startswith("start_image_"):
+            self._in_batch = True  # 安全兜底
             self._progress_counter += 1
             if self._progress_counter % self._progress_interval != 0:
                 return
@@ -91,6 +101,27 @@ class FlowRunner(QThread):
                     self.batch_progress.emit(idx, total, filename)
                 except ValueError:
                     pass
+            return
+
+        # ── 错误: 始终转发 ──
+        if phase.startswith("error:"):
+            self.node_error.emit(node_name, phase[7:])
+            return
+
+        # ── 最大帧数截断 ──
+        if phase == "max_frames_reached":
+            self.max_frames_reached.emit()
+            return
+
+        # ── 单次执行模式: 转发节点 start/done ──
+        # 批处理模式下抑制，避免每帧每节点的高频信号淹没主线程事件队列
+        if self._in_batch:
+            return
+
+        if phase == "start":
+            self.node_started.emit(node_name)
+        elif phase == "done":
+            self.node_done.emit(node_name)
 
     def run(self):
         try:
@@ -351,6 +382,7 @@ class LogPanel(QWidget):
             f"QScrollBar::handle:vertical {{ background: #444; border-radius: 3px; }}"
         )
         layout.addWidget(self._text)
+        self._text.document().setMaximumBlockCount(5000)
 
     def info(self, msg: str):
         self._append_signal.emit("INFO", msg)
@@ -1735,6 +1767,7 @@ class MainWindow(QMainWindow):
         self._runner: Optional[FlowRunner] = None
         self._stop_action = None
         self._current_project_path: str = ""
+        self._cuda_log_displayed: bool = False
         self._build_ui()
         self._apply_theme()
 
@@ -1849,6 +1882,12 @@ class MainWindow(QMainWindow):
         self._stop_action.setEnabled(False)
         self._stop_action.triggered.connect(self._cancel_flow)
         toolbar.addAction(self._stop_action)
+
+        self._resume_action = QAction("▶ 继续", self)
+        self._resume_action.setToolTip("继续批处理（达到最大帧数后暂停）")
+        self._resume_action.setEnabled(False)
+        self._resume_action.triggered.connect(self._resume_batch)
+        toolbar.addAction(self._resume_action)
 
         toolbar.addSeparator()
 
@@ -2089,6 +2128,20 @@ class MainWindow(QMainWindow):
             self.log_panel.warn("正在中止流程 — 等待当前帧处理完成...")
             self.status_bar.showMessage("正在中止流程...")
             self._stop_action.setEnabled(False)
+            self._resume_action.setEnabled(False)
+
+    def _resume_batch(self):
+        """继续批处理（最大帧数后暂停的恢复）。"""
+        self.engine.resume()
+        self._resume_action.setEnabled(False)
+        self.status_bar.showMessage("继续处理...")
+        self.log_panel.info("继续批处理")
+
+    def _on_max_frames_reached(self):
+        """达到最大帧数上限，暂停等待用户操作。"""
+        self._resume_action.setEnabled(True)
+        self.status_bar.showMessage("已达到最大帧数限制，点击「继续」继续处理")
+        self.log_panel.warn("已达到最大帧数限制，等待继续...")
 
     def _execute_flow(self):
         if not self.engine.nodes:
@@ -2129,6 +2182,7 @@ class MainWindow(QMainWindow):
             lambda name, msg: self.log_panel.error(f"节点错误 [{name}]: {msg}")
         )
         self._runner.batch_progress.connect(self._on_batch_progress)
+        self._runner.max_frames_reached.connect(self._on_max_frames_reached)
         self._runner.start()
 
     def _on_batch_progress(self, current: int, total: int, filename: str):
@@ -2137,9 +2191,24 @@ class MainWindow(QMainWindow):
         )
         self.log_panel.info(f"  [{current}/{total}] 处理: {filename}")
 
+    def _log_cuda_status_once(self):
+        """全局仅打印一次 CUDA 加速状态到运行日志。"""
+        if self._cuda_log_displayed:
+            return
+        import node_base as _nb
+        if not _nb._cuda_status_logged:
+            return
+        self._cuda_log_displayed = True
+        for node in self.engine.nodes:
+            msg = getattr(node, "_cuda_log_msg", "")
+            if msg:
+                self.log_panel.info(msg)
+                return
+
     def _on_flow_finished(self, results):
         self._runner = None
         self._stop_action.setEnabled(False)
+        self._resume_action.setEnabled(False)
 
         # ── 批处理结果 ──────────────────────────────
         if isinstance(results, dict) and results.get("mode") == "batch":
@@ -2167,12 +2236,18 @@ class MainWindow(QMainWindow):
             self._update_node_statuses()
             self.property_panel.refresh_output_preview()
             self.property_panel._refresh_region_output_from_nodes(self.engine.nodes)
+
+            # CUDA 状态日志（全局仅打印一次）
+            self._log_cuda_status_once()
             return
 
         # ── 单次执行结果 ────────────────────────────
         self.status_bar.showMessage("流程执行完成 ✓")
         node_count = len(self.engine.nodes)
         self.log_panel.success(f"算法运行完成，共处理 {node_count} 个节点")
+
+        # CUDA 状态日志（全局仅打印一次）
+        self._log_cuda_status_once()
 
         # 输出检测/分类结果到日志
         for node in self.engine.nodes:
@@ -2197,6 +2272,7 @@ class MainWindow(QMainWindow):
     def _on_flow_error(self, err_msg):
         self._runner = None
         self._stop_action.setEnabled(False)
+        self._resume_action.setEnabled(False)
         self.status_bar.showMessage("执行失败")
         self.log_panel.error(f"流程执行失败:\n{err_msg}")
         QMessageBox.critical(
@@ -2236,7 +2312,10 @@ def main():
     window = MainWindow()
     window.show()
 
-    sys.exit(app.exec_())
+    from batch_queue import ThreadPoolManager
+    exit_code = app.exec_()
+    ThreadPoolManager().shutdown(wait=True)
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
