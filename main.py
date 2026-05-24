@@ -396,11 +396,26 @@ class LogPanel(QWidget):
     def error(self, msg: str):
         self._append_signal.emit("ERROR", msg)
 
+    def big_success(self, msg: str):
+        """大字体完成提示，用于显示算法流运行完成。"""
+        self._append_signal.emit("BIG_OK", msg)
+
     def clear(self):
         self._text.clear()
 
     def _do_append(self, level: str, message: str):
         ts = QDateTime.currentDateTime().toString("HH:mm:ss")
+
+        if level == "BIG_OK":
+            self._text.moveCursor(QTextCursor.End)
+            self._text.insertHtml(
+                f'<p style="font-size:18px; font-weight:bold; color:{LOG_SUCCESS}; '
+                f'margin:12px 0 4px 0; padding:8px 0; text-align:center;">'
+                f'{message}</p><br>'
+            )
+            self._text.moveCursor(QTextCursor.End)
+            return
+
         color_map = {
             "INFO": LOG_INFO,
             "OK": LOG_SUCCESS,
@@ -591,6 +606,12 @@ class PropertyPanel(QWidget):
         if node.__class__.__name__ == "RegionOutputNode":
             self._refresh_region_output(node)
 
+    def _refresh_pc_node_metrics(self):
+        """执行后刷新点云配准节点的评估指标显示。"""
+        node = self._current_node
+        if node is not None and node.__class__.__name__ == "PointCloudRegistrationNode":
+            self.set_node(node, self._current_item)
+
     def _add_node_params(self, node: Node):
         """根据节点类型动态创建参数控件。"""
         cls_name = node.__class__.__name__
@@ -641,6 +662,22 @@ class PropertyPanel(QWidget):
             self._add_video_output_params(node)
         elif cls_name == "CoordinateTransformNode":
             self._add_coordinate_transform_params(node)
+        elif cls_name == "PointCloudInputNode":
+            self._add_pointcloud_input_params(node)
+        elif cls_name == "PointCloudOutputNode":
+            self._add_pointcloud_output_params(node)
+        elif cls_name == "PointCloudFilterNode":
+            self._add_pointcloud_filter_params(node)
+        elif cls_name == "PointCloudDownsampleNode":
+            self._add_pointcloud_downsample_params(node)
+        elif cls_name == "PointCloudSegmentationNode":
+            self._add_pointcloud_segmentation_params(node)
+        elif cls_name == "PointCloudClusterNode":
+            self._add_pointcloud_cluster_params(node)
+        elif cls_name == "PointCloudRegistrationNode":
+            self._add_pointcloud_registration_params(node)
+        elif cls_name == "PointCloudReconstructionNode":
+            self._add_pointcloud_reconstruction_params(node)
 
     # ── 参数控件辅助方法 ───────────────────────────────
 
@@ -974,6 +1011,38 @@ class PropertyPanel(QWidget):
         self._mapping_label.setStyleSheet(
             f"color: {color}; font-size: 11px; padding: 4px 0; background: transparent;"
         )
+
+    # ── PointCloudInput ─────────────────────────────────
+
+    def _add_pointcloud_input_params(self, node):
+        path_layout = QHBoxLayout()
+        path_edit = QLineEdit()
+        path_edit.setText(node.file_path)
+        path_edit.setPlaceholderText("选择点云文件 (PLY/PCD/XYZ/PTS...)...")
+        path_edit.setStyleSheet(self._input_style())
+        path_edit.textChanged.connect(lambda v: setattr(node, "file_path", v))
+        path_layout.addWidget(path_edit)
+
+        browse_btn = QPushButton("...")
+        browse_btn.setFixedWidth(32)
+        browse_btn.setStyleSheet(self._btn_style())
+        browse_btn.clicked.connect(
+            lambda: self._browse_pc_file(node, path_edit)
+        )
+        path_layout.addWidget(browse_btn)
+        self._form_layout.addRow("点云文件:", path_layout)
+
+    def _browse_pc_file(self, node, path_edit: QLineEdit):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择点云文件", "",
+            "点云文件 (*.ply *.pcd *.xyz *.pts *.txt *.xyzn *.xyzrgb);;"
+            "PLY (*.ply);;PCD (*.pcd);;"
+            "XYZ/文本 (*.xyz *.pts *.txt *.xyzn *.xyzrgb);;"
+            "所有文件 (*)"
+        )
+        if path:
+            path_edit.setText(path)
+            node.file_path = path
 
     # ── Overlay ───────────────────────────────────────
 
@@ -1571,6 +1640,177 @@ class PropertyPanel(QWidget):
         save_btn.clicked.connect(self._on_output_save)
         self._form_layout.addRow("", save_btn)
 
+    # ── PointCloudOutput ──────────────────────────────
+
+    def _add_pointcloud_output_params(self, node):
+        show_btn = QPushButton("显示点云")
+        show_btn.setStyleSheet(self._btn_style())
+        show_btn.clicked.connect(self._on_pc_show)
+        self._form_layout.addRow("", show_btn)
+
+        save_btn = QPushButton("保存点云")
+        save_btn.setStyleSheet(self._btn_style())
+        save_btn.clicked.connect(self._on_pc_save)
+        self._form_layout.addRow("", save_btn)
+
+    def _on_pc_show(self):
+        node = self._current_node
+        if node is None or node._last_pointcloud is None:
+            QMessageBox.information(self, "提示", "请先执行流程生成点云。")
+            return
+        try:
+            node.show_last_result()
+        except Exception as e:
+            QMessageBox.warning(self, "显示失败", str(e))
+
+    def _on_pc_save(self):
+        node = self._current_node
+        if node is None or node._last_pointcloud is None:
+            QMessageBox.information(self, "提示", "请先执行流程生成点云。")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存点云", "",
+            "PLY (*.ply);;PCD (*.pcd);;XYZ (*.xyz);;所有文件 (*)"
+        )
+        if path:
+            try:
+                node.save_last_result(path)
+            except Exception as e:
+                QMessageBox.warning(self, "保存失败", str(e))
+
+    # ── PointCloud Filter ─────────────────────────────
+
+    def _add_pointcloud_filter_params(self, node):
+        algo = node.algorithm
+        if algo in ("统计滤波", "半径滤波", "双边滤波"):
+            self._add_spin("邻域点数:", "nb_neighbors", node, (1, 200))
+        if algo == "统计滤波":
+            self._add_double_spin("标准差比率:", "std_ratio", node, (0.1, 10.0), step=0.1)
+        elif algo == "半径滤波":
+            self._add_double_spin("搜索半径:", "radius", node, (0.001, 10.0), step=0.001)
+        elif algo in ("中值滤波", "均值滤波"):
+            self._add_spin("邻域点数:", "kernel_size", node, (1, 100))
+        elif algo == "双边滤波":
+            self._add_double_spin("空间 sigma:", "sigma_s", node, (0.01, 1.0), step=0.01)
+            self._add_double_spin("强度 sigma:", "sigma_r", node, (0.01, 1.0), step=0.01)
+        elif algo == "直通滤波":
+            self._add_combo("过滤轴:", "axis", node, ["x", "y", "z"])
+            self._add_double_spin("最小值:", "min_val", node, (-100.0, 100.0), step=0.1)
+            self._add_double_spin("最大值:", "max_val", node, (-100.0, 100.0), step=0.1)
+
+    # ── PointCloud Downsample ────────────────────────
+
+    def _add_pointcloud_downsample_params(self, node):
+        algo = node.algorithm
+        if algo == "体素下采样":
+            self._add_double_spin("体素大小:", "voxel_size", node, (0.001, 1.0), step=0.001)
+        elif algo == "均匀下采样":
+            self._add_spin("间隔点数:", "every_k_points", node, (2, 100))
+        elif algo == "随机下采样":
+            self._add_double_spin("采样比率:", "sampling_ratio", node, (0.01, 0.99), step=0.01)
+        elif algo == "最远点采样":
+            self._add_spin("目标点数:", "num_samples", node, (100, 100000))
+
+    # ── PointCloud Segmentation ──────────────────────
+
+    def _add_pointcloud_segmentation_params(self, node):
+        algo = node.algorithm
+        if algo == "RANSAC":
+            self._add_double_spin("距离阈值:", "distance_threshold", node, (0.001, 1.0), step=0.001)
+            self._add_spin("RANSAC 采样数:", "ransac_n", node, (3, 10))
+            self._add_spin("迭代次数:", "num_iterations", node, (100, 100000))
+        elif algo == "区域生长分割":
+            self._add_spin("邻域点数:", "nb_neighbors", node, (5, 100))
+            self._add_double_spin("平滑度阈值:", "smoothness_threshold",
+                                  node, (0.01, 1.0), step=0.01)
+            self._add_double_spin("曲率阈值:", "curvature_threshold",
+                                  node, (0.01, 1.0), step=0.01)
+            self._add_spin("最小聚类大小:", "min_cluster_size", node, (10, 10000))
+        elif algo == "超体聚类":
+            self._add_double_spin("体素大小:", "voxel_size", node, (0.01, 1.0), step=0.01)
+            self._add_double_spin("种子分辨率:", "seed_resolution", node, (0.05, 1.0), step=0.01)
+            self._add_double_spin("颜色权重:", "color_importance", node, (0.0, 1.0), step=0.1)
+            self._add_double_spin("空间权重:", "spatial_importance", node, (0.0, 1.0), step=0.1)
+
+    # ── PointCloud Cluster ───────────────────────────
+
+    def _add_pointcloud_cluster_params(self, node):
+        algo = node.algorithm
+        if algo in ("DBSCAN", "欧式聚类"):
+            self._add_double_spin("邻域半径 (eps):", "eps", node, (0.001, 10.0), step=0.001)
+            self._add_spin("最小点数:", "min_points", node, (1, 1000))
+        elif algo == "K-means":
+            self._add_spin("聚类数 (K):", "n_clusters", node, (2, 100))
+        elif algo == "均值漂移聚类":
+            self._add_double_spin("带宽:", "bandwidth", node, (0.01, 10.0), step=0.01)
+            self._add_spin("最大迭代:", "max_iter", node, (10, 500))
+
+    # ── PointCloud Registration ──────────────────────
+
+    def _add_pointcloud_registration_params(self, node):
+        algo = node.algorithm
+
+        # 粗配准
+        if algo in ("FPFH+RANSAC配准", "快速全局配准(FGR)"):
+            self._add_double_spin("体素大小:", "voxel_size", node, (0.001, 1.0), step=0.001)
+        if algo == "FPFH+RANSAC配准":
+            self._add_double_spin("距离阈值:", "distance_threshold", node, (0.001, 1.0), step=0.001)
+            self._add_spin("RANSAC 点数:", "ransac_n", node, (3, 10))
+            self._add_spin("最大迭代:", "max_iterations", node, (1000, 1000000))
+        elif algo == "快速全局配准(FGR)":
+            self._add_double_spin("距离阈值:", "distance_threshold", node, (0.001, 1.0), step=0.001)
+            self._add_double_spin("分割因子:", "division_factor", node, (1.1, 2.0), step=0.1)
+            self._add_spin("最大迭代:", "max_iterations", node, (10, 500))
+        elif algo in ("CPD配准", "PCA配准"):
+            pass  # 无需参数
+        # 精配准
+        elif algo in ("点对点ICP", "点对面ICP", "广义ICP(GICP)", "彩色ICP"):
+            self._add_double_spin("距离阈值:", "distance_threshold", node, (0.001, 1.0), step=0.001)
+            self._add_spin("最大迭代:", "max_iterations", node, (10, 5000))
+            if algo != "彩色ICP":
+                self._add_double_spin("相对 Fitness 容差:", "relative_fitness",
+                                      node, (1e-8, 1e-2), step=1e-7)
+                self._add_double_spin("相对 RMSE 容差:", "relative_rmse",
+                                      node, (1e-8, 1e-2), step=1e-7)
+
+        # 评估指标（运行后显示）
+        rmse = getattr(node, "_last_rmse", 0.0)
+        fitness = getattr(node, "_last_fitness", 0.0)
+        if rmse > 0 or fitness > 0:
+            sep = QFrame()
+            sep.setFrameShape(QFrame.HLine)
+            sep.setStyleSheet("background: #444;")
+            self._form_layout.addRow("", sep)
+            metric_label = QLabel(
+                f"RMSE: {rmse:.6f}\nFitness: {fitness:.4%}"
+            )
+            metric_label.setWordWrap(True)
+            metric_label.setStyleSheet(
+                "color: #5cb878; font-size: 13px; font-weight: bold; "
+                "padding: 6px 0; background: transparent;"
+            )
+            self._form_layout.addRow("配准精度:", metric_label)
+
+    # ── PointCloud Reconstruction ────────────────────
+
+    def _add_pointcloud_reconstruction_params(self, node):
+        algo = node.algorithm
+
+        if algo == "泊松曲面重建":
+            self._add_spin("八叉树深度:", "poisson_depth", node, (5, 14))
+            self._add_double_spin("尺度因子:", "poisson_scale", node, (1.01, 2.0), step=0.01)
+            self._add_double_spin("密度阈值:", "density_threshold", node, (0.0, 0.5), step=0.01)
+        elif algo == "Delaunay三角剖分":
+            pass  # 无需参数
+        elif algo == "球旋转算法(BPA)":
+            self._add_double_spin("球半径 1:", "bpa_radius1", node, (0.001, 1.0), step=0.001)
+            self._add_double_spin("球半径 2:", "bpa_radius2", node, (0.001, 1.0), step=0.001)
+            self._add_double_spin("球半径 3:", "bpa_radius3", node, (0.001, 1.0), step=0.001)
+        elif algo == "Alpha Shape":
+            self._add_double_spin("Alpha 值:", "alpha", node, (0.001, 1.0), step=0.001)
+        elif algo == "Marching Cubes":
+            self._add_double_spin("体素大小:", "voxel_size", node, (0.001, 0.5), step=0.001)
+
     # ── CoordinateTransform ─────────────────────────────
 
     def _add_coordinate_transform_params(self, node):
@@ -2113,6 +2353,9 @@ class MainWindow(QMainWindow):
 
     # ── 选中处理 ──────────────────────────────────────
     def _on_selection_changed(self):
+        import sip
+        if sip.isdeleted(self.scene):
+            return
         selected = self.scene.selectedItems()
         if selected and isinstance(selected[0], NodeItem):
             item = selected[0]
@@ -2225,6 +2468,7 @@ class MainWindow(QMainWindow):
                     f"批处理完成: {completed}/{total} 帧 ✓"
                 )
                 self.log_panel.success(f"算法运行完成，批处理 {completed}/{total} 帧")
+                self.log_panel.big_success("算法流运行完成 ✓")
 
             # 报告文件级错误
             errors = results.get("errors", [])
@@ -2236,6 +2480,7 @@ class MainWindow(QMainWindow):
             self._update_node_statuses()
             self.property_panel.refresh_output_preview()
             self.property_panel._refresh_region_output_from_nodes(self.engine.nodes)
+            self.property_panel._refresh_pc_node_metrics()
 
             # CUDA 状态日志（全局仅打印一次）
             self._log_cuda_status_once()
@@ -2245,6 +2490,7 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("流程执行完成 ✓")
         node_count = len(self.engine.nodes)
         self.log_panel.success(f"算法运行完成，共处理 {node_count} 个节点")
+        self.log_panel.big_success("算法流运行完成 ✓")
 
         # CUDA 状态日志（全局仅打印一次）
         self._log_cuda_status_once()
@@ -2259,6 +2505,7 @@ class MainWindow(QMainWindow):
         self._update_node_statuses()
         self.property_panel.refresh_output_preview()
         self.property_panel._refresh_region_output_from_nodes(self.engine.nodes)
+        self.property_panel._refresh_pc_node_metrics()
         # 刷新类别映射标签
         if self.property_panel._current_node is not None and \
                 hasattr(self.property_panel._current_node, "json_path"):

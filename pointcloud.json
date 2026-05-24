@@ -1,0 +1,145 @@
+{
+  "version": "1.1",
+  "nodes": [
+    {
+      "uid": "d50670e7",
+      "type": "PointCloudInputNode",
+      "x": -318.3686440677966,
+      "y": -211.44491525423726,
+      "params": {
+        "file_path": "D:/claude/image-flow/data/pointcloud/tutorials/room_scan1.pcd"
+      }
+    },
+    {
+      "uid": "46b8c6d0",
+      "type": "PointCloudRegistrationNode",
+      "x": 141.0826271186441,
+      "y": -84.29237288135596,
+      "params": {
+        "algorithm": "FPFH+RANSAC配准",
+        "voxel_size": 0.05,
+        "distance_threshold": 0.05,
+        "ransac_n": 3,
+        "max_iterations": 2000,
+        "division_factor": 1.4,
+        "decrease_mu": true,
+        "relative_fitness": 1e-06,
+        "relative_rmse": 1e-06,
+        "cpd_tol": 0.0001
+      }
+    },
+    {
+      "uid": "198d69d8",
+      "type": "PointCloudInputNode",
+      "x": -293.74152542372883,
+      "y": 93.80508474576271,
+      "params": {
+        "file_path": "D:/claude/image-flow/data/pointcloud/tutorials/room_scan2.pcd"
+      }
+    },
+    {
+      "uid": "3c0fb79c",
+      "type": "PointCloudOutputNode",
+      "x": 189.13577006875875,
+      "y": 59.45024192863811,
+      "params": {
+        "save_dir": ""
+      }
+    },
+    {
+      "uid": "c61a69cd",
+      "type": "PointCloudDownsampleNode",
+      "x": -90.10169491525424,
+      "y": -197.26059322033896,
+      "params": {
+        "algorithm": "均匀下采样",
+        "voxel_size": 0.05,
+        "every_k_points": 5,
+        "sampling_ratio": 0.5,
+        "num_samples": 1024
+      }
+    },
+    {
+      "uid": "01b020a4",
+      "type": "PointCloudDownsampleNode",
+      "x": -108.09533898305087,
+      "y": -33.08474576271186,
+      "params": {
+        "algorithm": "均匀下采样",
+        "voxel_size": 0.05,
+        "every_k_points": 5,
+        "sampling_ratio": 0.5,
+        "num_samples": 1024
+      }
+    },
+    {
+      "uid": "0436c3c3",
+      "type": "PointCloudOutputNode",
+      "x": 155.08966922271577,
+      "y": -284.6432613678164,
+      "params": {
+        "save_dir": ""
+      }
+    },
+    {
+      "uid": "edb47823",
+      "type": "PointCloudOutputNode",
+      "x": 271.8567527800572,
+      "y": -200.8665254237288,
+      "params": {
+        "save_dir": ""
+      }
+    }
+  ],
+  "connections": [
+    {
+      "uid": "908d1d5e",
+      "src_node": "46b8c6d0",
+      "src_port": "点云",
+      "tgt_node": "3c0fb79c",
+      "tgt_port": "点云"
+    },
+    {
+      "uid": "266ffe96",
+      "src_node": "d50670e7",
+      "src_port": "点云",
+      "tgt_node": "c61a69cd",
+      "tgt_port": "点云"
+    },
+    {
+      "uid": "ee578b9e",
+      "src_node": "198d69d8",
+      "src_port": "点云",
+      "tgt_node": "01b020a4",
+      "tgt_port": "点云"
+    },
+    {
+      "uid": "c2b83fe9",
+      "src_node": "c61a69cd",
+      "src_port": "点云",
+      "tgt_node": "46b8c6d0",
+      "tgt_port": "点云"
+    },
+    {
+      "uid": "473be6be",
+      "src_node": "01b020a4",
+      "src_port": "点云",
+      "tgt_node": "46b8c6d0",
+      "tgt_port": "点云"
+    },
+    {
+      "uid": "5481fbff",
+      "src_node": "d50670e7",
+      "src_port": "点云",
+      "tgt_node": "0436c3c3",
+      "tgt_port": "点云"
+    },
+    {
+      "uid": "fa23de7c",
+      "src_node": "c61a69cd",
+      "src_port": "点云",
+      "tgt_node": "edb47823",
+      "tgt_port": "点云"
+    }
+  ]
+}

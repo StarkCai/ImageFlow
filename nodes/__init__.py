@@ -4,6 +4,7 @@ from nodes.input.image_input import ImageInputNode
 from nodes.input.video_input import VideoInputNode
 from nodes.input.region_input import RegionInputNode
 from nodes.input.class_mapping import ClassMappingNode
+from nodes.input.pointcloud_input import PointCloudInputNode
 from nodes.image_processing.smoothing import SmoothingNode
 from nodes.image_processing.edge_detect import EdgeDetectNode
 from nodes.image_processing.threshold import ThresholdNode
@@ -20,6 +21,13 @@ from nodes.deep_learning.object_detection import ObjectDetectionNode
 from nodes.deep_learning.classification import ClassificationNode
 from nodes.deep_learning.ocr import OcrNode
 from nodes.logic.coordinate_transform import CoordinateTransformNode
+from nodes.pointcloud.filter import PointCloudFilterNode
+from nodes.pointcloud.downsample import PointCloudDownsampleNode
+from nodes.pointcloud.segmentation import PointCloudSegmentationNode
+from nodes.pointcloud.cluster import PointCloudClusterNode
+from nodes.pointcloud.registration import PointCloudRegistrationNode
+from nodes.pointcloud.reconstruction import PointCloudReconstructionNode
 from nodes.output.region_output import RegionOutputNode
 from nodes.output.image_output import ImageOutputNode
 from nodes.output.video_output import VideoOutputNode
+from nodes.output.pointcloud_output import PointCloudOutputNode
