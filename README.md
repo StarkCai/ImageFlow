@@ -1,6 +1,6 @@
-# Image Flow — 图像处理流式编辑器
+# Image Flow — 图像/视频/点云处理流式编辑器
 
-基于 PyQt5 的节点式图像处理编辑器，通过拖拽算子、连线构建处理流程，支持传统图像处理与 ONNX 深度学习推理。
+基于 PyQt5 的节点式视觉处理编辑器，通过拖拽算子、连线构建处理流程，支持传统图像处理、视频处理、点云处理与 ONNX 深度学习推理。
 
 ## 系统要求
 
@@ -59,7 +59,7 @@ python main.py
 2. 点击算子**输出端口**（蓝色圆点）拖拽到另一算子的**输入端口**（红色圆点）建立连线
 3. 选中节点，在右侧属性面板配置参数
 4. 点击工具栏 **「▶ 执行」**（或按 `F5`）运行流程
-5. 结果图像可预览、保存，区域数据可查看 JSON 详情或下载
+5. 结果图像可预览、保存，区域数据可查看 JSON 详情或下载，点云可交互式查看和保存
 
 ## 工程管理
 
@@ -74,7 +74,7 @@ python main.py
 工程文件结构：
 ```json
 {
-  "version": "1.0",
+  "version": "1.1",
   "nodes": [
     { "uid": "...", "type": "ObjectDetectionNode", "x": 100, "y": 200,
       "params": { "model_path": "yolov8.onnx", "input_width": 640 } }
@@ -87,6 +87,10 @@ python main.py
 ```
 
 ## 标准数据格式
+
+### 图像格式
+
+RGB numpy 数组 (H×W×3, uint8)，为所有图像处理节点的标准数据格式。
 
 ### 区域格式
 
@@ -121,15 +125,33 @@ python main.py
 - [coco.json](coco.json) — COCO 数据集 80 类
 - [imagenet.json](imagenet.json) — ImageNet-1K 1000 类
 
+### 点云格式
+
+点云节点使用 open3d `PointCloud` 对象在节点间传递，支持 PLY、PCD、XYZ、PTS 等格式的读写。
+
+## 端口类型
+
+端口带有 `data_type` 标记，连线时校验类型兼容性：
+
+| 类型 | 说明 |
+|------|------|
+| 图像 | RGB numpy 数组 (H×W×3, uint8) |
+| 视频 | 视频帧序列 (numpy 数组) |
+| 区域 | 标准区域 JSON 格式 `{"regions": [...]}` |
+| 类别映射 | 类别映射 JSON `{"mapping": {"0": "name", ...}}` |
+| 点云 | open3d `PointCloud` 对象 |
+
 ## 算子列表
 
 ### 输入
 
 | 算子 | 端口 | 说明 |
 |------|------|------|
-| 图像读取 | 出: 图像 | 加载图像文件（png/jpg/bmp/tiff/webp） |
+| 图像读取 | 出: 图像 | 加载图像文件（png/jpg/bmp/tiff/webp），支持单张和文件夹模式 |
+| 视频读取 | 出: 图像 | 读取视频文件，支持帧跳过和最大帧数限制 |
 | 区域读取 | 入: 图像, 出: 图像/区域 | 加载图像，在预览窗口绘制矩形/圆形/多边形区域，支持拖拽编辑顶点 |
 | 类别映射 | 出: 类别映射 | 读取本地 JSON 类别映射文件，校验格式，供深度学习节点使用 |
+| 点云读取 | 出: 点云 | 读取 PLY/PCD/XYZ/PTS 格式点云文件 |
 
 ### 图像处理
 
@@ -159,6 +181,7 @@ python main.py
 |------|------|------|
 | 目标检测 | 入: 图像/类别映射, 出: 图像/区域 | ONNX Runtime YOLO 推理，输出叠加框图像 + 标准区域列表 |
 | 目标分类 | 入: 图像/类别映射, 出: 图像 | ONNX Runtime 推理，输出左上角叠加分类标签的图像 |
+| 文字识别 | 入: 图像, 出: 图像/区域 | ONNX Runtime OCR（检测+识别），支持字典辅助 |
 
 深度学习算子主要参数：
 
@@ -184,51 +207,81 @@ python main.py
 - 类别映射后，标签和日志显示类别名（如 `goldfish 0.92`）
 - ImageNet 标准预处理（resize + mean/std 归一化）
 
+### 逻辑
+
+| 算子 | 端口 | 说明 |
+|------|------|------|
+| 坐标变换 | 入: 区域, 出: 区域 | 在不同图像尺寸间缩放区域坐标 |
+
+### 点云处理
+
+| 算子 | 算法 |
+|------|------|
+| 点云滤波 | 统计滤波、半径滤波、中值滤波、均值滤波、双边滤波、直通滤波 |
+| 点云下采样 | 体素下采样、均匀下采样、随机下采样、最远点采样 |
+| 点云分割 | RANSAC 平面分割、区域生长分割、超体聚类 |
+| 点云聚类 | DBSCAN、K-means、欧式聚类、均值漂移聚类 |
+| 点云配准 | 粗配准（FPFH+RANSAC / FGR / CPD / PCA）+ 精配准（点对点ICP / 点对面ICP / GICP / 彩色ICP），支持多输入点云，输出评估指标（RMSE、Fitness） |
+| 三维表面重建 | 泊松曲面重建、Delaunay三角剖分、球旋转算法(BPA)、Alpha Shape、Marching Cubes |
+
 ### 输出
 
 | 算子 | 端口 | 说明 |
 |------|------|------|
 | 图像输出 | 入: 图像 | 图像预览（自适应窗口）、自动显示（可关闭）、保存到文件 |
+| 视频输出 | 入: 图像 | 视频帧累积输出、保存为视频文件或图像序列 |
 | 区域输出 | 入: 区域 | JSON 预览面板、"详细显示"弹窗查看完整 JSON、"下载 JSON"保存到文件 |
-
-## 端口类型
-
-端口带有 `data_type` 标记，连线时校验类型兼容性：
-
-| 类型 | 说明 |
-|------|------|
-| 图像 | RGB numpy 数组 (H×W×3, uint8) |
-| 区域 | 标准区域 JSON 格式 `{"regions": [...]}` |
-| 类别映射 | 类别映射 JSON `{"mapping": {"0": "name", ...}}` |
+| 点云输出 | 入: 点云 | 双栏交互查看器（左侧3D视图 + 右侧点信息面板）、点击选点显示坐标、保存到文件 |
 
 ## 架构概要
 
 ```
-main.py              — 应用入口、主窗口、日志面板、属性面板、工程管理
-project.py           — 工程序列化/反序列化（JSON）
-node_base.py         — Node / Port / Connection / ExecutionEngine 基类、标准格式工具
-node_registry.py     — 单例节点注册表（@register_node 装饰器）
-node_canvas.py       — QGraphicsView 画布、节点项、连线、拖拽交互
+main.py                 — 应用入口、主窗口、日志面板、属性面板、工程管理
+project.py              — 工程序列化/反序列化（JSON）
+node_base.py            — Node / Port / Connection / ExecutionEngine 基类、标准格式工具
+node_registry.py        — 单例节点注册表（@register_node 装饰器）
+node_canvas.py          — QGraphicsView 画布、节点项、连线、拖拽交互
+batch_queue.py          — 批处理生产者-消费者队列（ImageQueue）
 nodes/
-  image_input.py     — 图像读取
-  region_input.py    — 区域读取（含绘制对话框）
-  class_mapping.py   — 类别映射
-  smoothing.py       — 图像平滑
-  edge_detect.py     — 边缘检测
-  threshold.py       — 阈值二值化
-  geometry.py        — 几何变换
-  morphology.py      — 形态学处理
-  enhancement.py     — 图像增强
-  frequency.py       — 频域处理
-  segmentation.py    — 图像分割
-  feature_detection.py — 特征检测
-  color_space.py     — 颜色空间转换
-  overlay.py         — 图像绘制（多连线输入）
-  crop.py            — 图像裁剪
-  object_detection.py — 目标检测（ONNX）
-  classification.py  — 目标分类（ONNX）
-  image_output.py    — 图像输出
-  region_output.py   — 区域输出
+  __init__.py
+  input/
+    image_input.py      — 图像读取
+    video_input.py      — 视频读取
+    region_input.py     — 区域读取（含绘制对话框）
+    class_mapping.py    — 类别映射
+    pointcloud_input.py — 点云读取
+  image_processing/
+    smoothing.py        — 图像平滑
+    edge_detect.py      — 边缘检测
+    threshold.py        — 阈值二值化
+    geometry.py         — 几何变换
+    morphology.py       — 形态学处理
+    enhancement.py      — 图像增强
+    frequency.py        — 频域处理
+    segmentation.py     — 图像分割
+    feature_detection.py — 特征检测
+    color_space.py      — 颜色空间转换
+  overlay/
+    overlay.py          — 图像绘制（多连线输入）
+    crop.py             — 图像裁剪
+  deep_learning/
+    object_detection.py — 目标检测（ONNX）
+    classification.py   — 目标分类（ONNX）
+    ocr.py              — 文字识别（ONNX）
+  logic/
+    coordinate_transform.py — 坐标变换
+  pointcloud/
+    filter.py           — 点云滤波
+    downsample.py       — 点云下采样
+    segmentation.py     — 点云分割
+    cluster.py          — 点云聚类
+    registration.py     — 点云配准
+    reconstruction.py   — 三维表面重建
+  output/
+    image_output.py     — 图像输出
+    video_output.py     — 视频输出
+    region_output.py    — 区域输出
+    pointcloud_output.py — 点云输出
 ```
 
 执行引擎按拓扑顺序（Kahn 算法）调度节点，后台线程运行避免 UI 阻塞，错误信息同时输出到日志面板和弹窗。
@@ -238,6 +291,8 @@ nodes/
 | 包 | 用途 |
 |----|------|
 | PyQt5 | GUI 框架 |
-| opencv-python | 图像处理 |
+| opencv-python | 图像/视频处理 |
 | numpy | 数组计算 |
 | onnxruntime | ONNX 模型推理 |
+| open3d | 点云处理与可视化 |
+| scipy | Delaunay 三角剖分、空间计算 |
